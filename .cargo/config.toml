@@ -1,0 +1,13 @@
+[build]
+target = "thumbv7em-none-eabi"
+
+[target.'cfg(all(target_arch = "arm", target_os = "none"))']
+runner = 'probe-rs run --chip STM32G431CBUx'
+
+[env]
+DEFMT_LOG = "trace"
+
+
+[unstable]
+build-std = ["core"]
+build-std-features = ["panic_immediate_abort"]
