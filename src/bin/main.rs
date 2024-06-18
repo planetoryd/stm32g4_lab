@@ -1,6 +1,8 @@
 #![no_std]
 #![no_main]
 
+use core::future::{pending, Pending};
+
 use lab_stm32g4::fmt;
 
 #[cfg(not(feature = "defmt"))]
@@ -24,7 +26,6 @@ use fmt::{debug, info};
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    info!("hw");
     let mut config = Config::default();
     {
         use embassy_stm32::rcc::*;
@@ -40,14 +41,27 @@ async fn main(spawner: Spawner) {
         config.rcc.mux.adc12sel = mux::Adcsel::SYS;
         config.rcc.sys = Sysclk::PLL1_R;
     }
-    let p = embassy_stm32::init(config);
+    let mut p = embassy_stm32::init(config);
 
-    info!("create opamp");
-    let op1 = OpAmp::new(p.OPAMP1, OpAmpSpeed::Normal);
+    info!("init opmap for hall effect sensor");
+    let mut op1 = OpAmp::new(p.OPAMP1, OpAmpSpeed::Normal);
+    let mut adc = Adc::new(p.ADC1);
+    let mut opi = op1.buffer_int(&mut p.PA1, OpAmpGain::Mul16);
 
-    info!("create adc");
-    let mut adc = Adc::new(p.ADC2);
+    unwrap!(spawner.spawn(led(Output::new(p.PC13, Level::Low, Speed::Low))));
 
-    info!("done");
-    loop {}
+    pending::<()>().await;
+
+    // loop {
+    //     info!("PA1={}", adc.read(&mut opi));
+    //     Timer::after_millis(500).await;
+    // }
+}
+
+#[embassy_executor::task]
+async fn led(mut out: Output<'static>) {
+    loop {
+        out.toggle();
+        Timer::after_millis(500).await;
+    }
 }
