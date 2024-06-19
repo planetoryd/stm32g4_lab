@@ -5,6 +5,7 @@ edition = "2021"
 name = "lab_stm32g4"
 version = "0.1.0"
 
+
 [dependencies]
 cortex-m = { version = "0.7.7", features = [
     "inline-asm",
@@ -18,21 +19,22 @@ embassy-executor = { version = "0.5.0", features = [
     "executor-thread",
     "integrated-timers",
     "executor-interrupt",
-], path = "./embassy/embassy-executor" }
-embassy-futures = { version = "0.1.1", path = "./embassy/embassy-futures" }
-embassy-stm32 = { version = "0.1.0", path = "./embassy/embassy-stm32", features = [
+], path = "../embassy/embassy-executor" }
+embassy-futures = { version = "0.1.1", path = "../embassy/embassy-futures" }
+embassy-stm32 = { version = "0.1.0", path = "../embassy/embassy-stm32", features = [
     "memory-x",
     "stm32g431cb",
     "time-driver-any",
     "exti",
     "unstable-pac",
 ] }
-embassy-sync = { version = "0.6.0", path = "./embassy/embassy-sync" }
+embassy-sync = { version = "0.6.0", path = "../embassy/embassy-sync" }
 embassy-time = { version = "0.3.1", features = [
     "tick-hz-32_768",
-], path = "./embassy/embassy-time" }
+], path = "../embassy/embassy-time" }
 panic-halt = "0.2.0"
 panic-probe = { version = "0.3.2", features = ["print-defmt"], optional = true }
+embassy-usb = { version = "0.2", path = "../embassy/embassy-usb" }
 
 [[bin]]
 name = "main"
@@ -66,4 +68,6 @@ debug = [
     "embassy-time/defmt",
     "embassy-time/defmt-timestamp-uptime",
     "embassy-stm32/defmt",
+    "embassy-usb/defmt",
 ]
+
