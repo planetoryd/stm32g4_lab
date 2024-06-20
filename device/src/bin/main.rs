@@ -60,7 +60,7 @@ async fn main(spawner: Spawner) {
     let mut adc: Adc<peripherals::ADC1> = Adc::new(p.ADC1);
     let mut opi = op1.buffer_int(&mut p.PA1, OpAmpGain::Mul16);
 
-    unwrap!(spawner.spawn(led(Output::new(p.PC13, Level::Low, Speed::Low))));
+    unwrap!(spawner.spawn(led(Output::new(p.PC13, Level::High, Speed::Low))));
 
     let driver = Driver::new(p.USB, Irqs, p.PA12, p.PA11);
 
@@ -96,6 +96,7 @@ async fn main(spawner: Spawner) {
 
     let echo_fut = async {
         loop {
+            
             class.wait_connection().await;
             unsafe {
                 USB_CONN = true;

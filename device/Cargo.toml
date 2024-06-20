@@ -35,6 +35,7 @@ embassy-time = { version = "0.3.1", features = [
 panic-halt = "0.2.0"
 panic-probe = { version = "0.3.2", features = ["print-defmt"], optional = true }
 embassy-usb = { version = "0.2", path = "../embassy/embassy-usb" }
+common = { version = "0.1.0", path = "../common" }
 
 [[bin]]
 name = "main"

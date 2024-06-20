@@ -1,0 +1,1 @@
+sudo ./target/debug/host
