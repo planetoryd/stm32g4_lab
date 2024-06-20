@@ -152,10 +152,12 @@ async fn echo<'d, T: 'd + embassy_stm32::usb::Instance>(
 ) -> Result<(), Disconnected> {
     let mut buf = [0; 64];
     loop {
-        
+            
         let n = class.read_packet(&mut buf).await?;
         let data = &buf[..n];
         info!("data: {:x}", data);
         class.write_packet(data).await?;
     }
 }
+
+

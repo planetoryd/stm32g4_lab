@@ -1,5 +1,6 @@
 use std::{
     future::{self, pending},
+    io,
     str::{self, from_utf8},
 };
 
@@ -12,9 +13,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     task::JoinSet,
 };
-use tokio_serde::formats::{SymmetricalBincode, *};
 use tokio_serial::SerialPortBuilderExt;
-use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -52,10 +51,22 @@ async fn handle_g4(portname: String) -> Result<()> {
     dev.set_exclusive(true)?;
     dev.write_all("test".as_bytes()).await?;
 
-    let fr = Framed::new(dev, LengthDelimitedCodec::new());
-    let mut coded: tokio_serde::Framed<_, Message, Message, SymmetricalBincode<Message>> =
-        tokio_serde::SymmetricallyFramed::new(fr, SymmetricalBincode::default());
-    coded.send(Message { val: 1 }).await?;
+    let mut buf = [0; 12];
+    loop {
+        match dev.try_read(&mut buf) {
+            Result::Ok(n) => {
+                if n > 0 {
+                    dbg!(&buf);
+                    buf.fill(0);
+                }
+            }
+            Result::Err(er) => {
+                if er.kind() == io::ErrorKind::WouldBlock {
+                    dev.readable().await?;
+                }
+            }
+        }
+    }
 
     Ok(())
 }
