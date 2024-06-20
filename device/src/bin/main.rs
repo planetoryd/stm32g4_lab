@@ -3,11 +3,13 @@
 
 use core::future::{pending, Pending};
 
+use common::Message;
 use embassy_usb::{class::cdc_acm::CdcAcmClass, driver::EndpointError, UsbDevice};
 use lab_stm32g4::fmt;
 
 #[cfg(not(feature = "defmt"))]
 use panic_halt as _;
+use serde_json_core::heapless;
 #[cfg(feature = "defmt")]
 use {defmt_rtt as _, panic_probe as _};
 
@@ -96,7 +98,6 @@ async fn main(spawner: Spawner) {
 
     let echo_fut = async {
         loop {
-            
             class.wait_connection().await;
             unsafe {
                 USB_CONN = true;
@@ -152,12 +153,10 @@ async fn echo<'d, T: 'd + embassy_stm32::usb::Instance>(
 ) -> Result<(), Disconnected> {
     let mut buf = [0; 64];
     loop {
-            
-        let n = class.read_packet(&mut buf).await?;
-        let data = &buf[..n];
-        info!("data: {:x}", data);
-        class.write_packet(data).await?;
+        let read = class.read_packet(&mut buf).await?;
+        let (msg, consumed): (Message, usize) = serde_json_core::from_slice(&buf[..read]).unwrap();
+        let reply = Message { val: msg.val + 1 };
+        let coded: heapless::Vec<u8, 64> = serde_json_core::to_vec(&reply).unwrap();
+        class.write_packet(&coded).await?;
     }
 }
-
-

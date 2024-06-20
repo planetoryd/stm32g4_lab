@@ -49,14 +49,19 @@ async fn handle_g4(portname: String) -> Result<()> {
         .unwrap();
 
     dev.set_exclusive(true)?;
-    dev.write_all("test".as_bytes()).await?;
+    let msg = Message {
+        val: 3
+    };
+    let coded = serde_json::to_vec(&msg)?;
+    dev.write_all(&coded).await?;
 
     let mut buf = [0; 12];
     loop {
         match dev.try_read(&mut buf) {
             Result::Ok(n) => {
                 if n > 0 {
-                    dbg!(&buf);
+                    let decoded: Message = serde_json::from_slice(&buf[..n])?;
+                    dbg!(&decoded);
                     buf.fill(0);
                 }
             }

@@ -36,6 +36,8 @@ panic-halt = "0.2.0"
 panic-probe = { version = "0.3.2", features = ["print-defmt"], optional = true }
 embassy-usb = { version = "0.2", path = "../embassy/embassy-usb" }
 common = { version = "0.1.0", path = "../common" }
+serde-json-core = "0.5.1"
+
 
 [[bin]]
 name = "main"

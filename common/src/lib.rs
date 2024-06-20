@@ -17,7 +17,8 @@ mod tests {
     }
 }
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, Debug, Clone)]
 pub struct Message {
     pub val: u32,
 }
+
