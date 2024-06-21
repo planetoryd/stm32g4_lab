@@ -49,17 +49,16 @@ async fn handle_g4(portname: String) -> Result<()> {
         .unwrap();
 
     dev.set_exclusive(true)?;
-    let msg = Message {
-        val: 3
-    };
+    let msg = Message::default();
     let coded = serde_json::to_vec(&msg)?;
     dev.write_all(&coded).await?;
 
-    let mut buf = [0; 12];
+    let mut buf = [0; 128];
     loop {
         match dev.try_read(&mut buf) {
             Result::Ok(n) => {
                 if n > 0 {
+                    println!("read_len={}, {:?}", n, &buf[..10]);
                     let decoded: Message = serde_json::from_slice(&buf[..n])?;
                     dbg!(&decoded);
                     buf.fill(0);
@@ -74,4 +73,19 @@ async fn handle_g4(portname: String) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[test]
+fn testser() {
+    let reply = Message::default();
+    let coded: serde_json_core::heapless::Vec<u8, 64> = serde_json_core::to_vec(&reply).unwrap();
+    let p = coded.as_slice();
+    println!("{:?}", p);
+
+    let coded = serde_json::to_vec(&reply).unwrap();
+    let p = coded.as_slice();
+    println!("{:?}, {}", p, p.len());
+
+    let decode: Message = serde_json::from_slice(p).unwrap();
+    dbg!(decode);
 }

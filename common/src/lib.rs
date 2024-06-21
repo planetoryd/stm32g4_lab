@@ -19,6 +19,9 @@ mod tests {
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone)]
 pub struct Message {
-    pub val: u32,
+    /// Speed from hall effect sensor
+    pub hall_speed: Option<u32>
 }
+
+
 

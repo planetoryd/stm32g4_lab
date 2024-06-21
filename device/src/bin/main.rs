@@ -151,11 +151,11 @@ impl From<EndpointError> for Disconnected {
 async fn echo<'d, T: 'd + embassy_stm32::usb::Instance>(
     class: &mut CdcAcmClass<'d, Driver<'d, T>>,
 ) -> Result<(), Disconnected> {
-    let mut buf = [0; 64];
+    let mut buf = [0; 128];
     loop {
         let read = class.read_packet(&mut buf).await?;
         let (msg, consumed): (Message, usize) = serde_json_core::from_slice(&buf[..read]).unwrap();
-        let reply = Message { val: msg.val + 1 };
+        let reply = Message::default();
         let coded: heapless::Vec<u8, 64> = serde_json_core::to_vec(&reply).unwrap();
         class.write_packet(&coded).await?;
     }
