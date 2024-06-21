@@ -5,7 +5,7 @@ use core::future::{pending, Pending};
 
 use common::Message;
 use embassy_usb::{class::cdc_acm::CdcAcmClass, driver::EndpointError, UsbDevice};
-use lab_stm32g4::fmt;
+use defmt::*;
 
 #[cfg(not(feature = "defmt"))]
 use panic_halt as _;
@@ -27,7 +27,6 @@ use embassy_stm32::{
 };
 use embassy_stm32::{peripherals, usb};
 use embassy_time::{Delay, Duration, Timer};
-use fmt::{debug, info};
 
 bind_interrupts!(
     struct Irqs {
