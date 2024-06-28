@@ -4,8 +4,9 @@
 use core::future::{pending, Pending};
 
 use common::Message;
-use embassy_usb::{class::cdc_acm::CdcAcmClass, driver::EndpointError, UsbDevice};
 use defmt::*;
+use embassy_sync::channel;
+use embassy_usb::{class::cdc_acm::CdcAcmClass, driver::EndpointError, UsbDevice};
 
 #[cfg(not(feature = "defmt"))]
 use panic_halt as _;
@@ -16,11 +17,12 @@ use {defmt_rtt as _, panic_probe as _};
 use defmt::*;
 use embassy_executor::{SpawnToken, Spawner};
 use embassy_stm32::{
-    adc::{self, Adc},
+    adc::{self, Adc, Temperature, VrefInt},
     bind_interrupts,
+    exti::ExtiInput,
     gpio::{Level, Output, Speed},
     opamp::{self, *},
-    peripherals::{PB10, USB},
+    peripherals::{OPAMP1, PA1, PB10, USB},
     time::mhz,
     usb::Driver,
     Config,
@@ -33,6 +35,16 @@ bind_interrupts!(
         USB_LP => usb::InterruptHandler<peripherals::USB>;
     }
 );
+
+type HallData = u16;
+static HALL: channel::Channel<
+    embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
+    HallData,
+    128,
+> = channel::Channel::new();
+
+// todo: hall effect sensor speed meter
+// electromagnetic microbalance
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -57,14 +69,13 @@ async fn main(spawner: Spawner) {
     let mut p = embassy_stm32::init(config);
 
     info!("init opmap for hall effect sensor");
-    let mut op1 = OpAmp::new(p.OPAMP1, OpAmpSpeed::Normal);
     let mut adc: Adc<peripherals::ADC1> = Adc::new(p.ADC1);
-    let mut opi = op1.buffer_int(&mut p.PA1, OpAmpGain::Mul16);
-
+    adc.set_sample_time(adc::SampleTime::CYCLES24_5);
+    let mut vrefint = adc.enable_vrefint();
+    let mut temp = adc.enable_temperature();
     unwrap!(spawner.spawn(led(Output::new(p.PC13, Level::High, Speed::Low))));
 
     let driver = Driver::new(p.USB, Irqs, p.PA12, p.PA11);
-
     let mut config = embassy_usb::Config::new(0xc0de, 0xcafe);
     config.manufacturer = Some("Plein");
     config.product = Some("Lab device G4");
@@ -94,15 +105,14 @@ async fn main(spawner: Spawner) {
 
     let mut usb = builder.build();
     let usb_fut = usb.run();
-
-    let echo_fut = async {
+    let report_fut = async {
         loop {
             class.wait_connection().await;
             unsafe {
                 USB_CONN = true;
             }
             info!("Connected");
-            let _ = echo(&mut class).await;
+            let _ = report(&mut class).await;
             info!("Disconnected");
             unsafe {
                 USB_CONN = false;
@@ -110,10 +120,12 @@ async fn main(spawner: Spawner) {
         }
     };
 
-    embassy_futures::join::join(usb_fut, echo_fut).await;
+    spawner
+        .spawn(hall_watcher(adc, p.OPAMP1, p.PA1, vrefint, temp))
+        .unwrap();
+    embassy_futures::join::join(usb_fut, report_fut).await;
 
     // pending::<()>().await;
-
     // Driver::new();
 
     // loop {
@@ -134,6 +146,24 @@ async fn led(mut out: Output<'static>) {
     }
 }
 
+#[embassy_executor::task]
+async fn hall_watcher(
+    mut adc: Adc<'static, peripherals::ADC1>,
+    op1: OPAMP1,
+    mut pa1: PA1,
+    mut vref: VrefInt,
+    temp: Temperature,
+) {
+    let mut op1 = OpAmp::new(op1, OpAmpSpeed::Normal);
+    let mut opi = op1.buffer_int(&mut pa1, OpAmpGain::Mul16);
+    let (sx, rx) = (HALL.sender(), HALL.receiver());
+    loop {
+        let va = adc.read(&mut opi);
+        let _ = sx.try_send(va);
+        Timer::after_millis(100).await;
+    }
+}
+
 static mut USB_CONN: bool = false;
 
 struct Disconnected {}
@@ -147,7 +177,7 @@ impl From<EndpointError> for Disconnected {
     }
 }
 
-async fn echo<'d, T: 'd + embassy_stm32::usb::Instance>(
+async fn report<'d, T: 'd + embassy_stm32::usb::Instance>(
     class: &mut CdcAcmClass<'d, Driver<'d, T>>,
 ) -> Result<(), Disconnected> {
     let mut buf = [0; 128];
