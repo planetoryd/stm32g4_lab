@@ -1,3 +1,6 @@
 [submodule "embassy"]
 	path = embassy
 	url = https://github.com/embassy-rs/embassy/
+[submodule "async-codec-nostd"]
+	path = async-codec-nostd
+	url = https://github.com/planetoryd/async-codec-nostd

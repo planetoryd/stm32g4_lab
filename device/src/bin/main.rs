@@ -3,11 +3,12 @@
 
 use core::future::{pending, Pending};
 
-use common::Message;
+use common::{frame_config, Message};
 use defmt::*;
 use embassy_sync::channel;
 use embassy_usb::{class::cdc_acm::CdcAcmClass, driver::EndpointError, UsbDevice};
 
+use futures_util::Stream;
 #[cfg(not(feature = "defmt"))]
 use panic_halt as _;
 use serde_json_core::heapless;
@@ -35,9 +36,10 @@ bind_interrupts!(
         USB_LP => usb::InterruptHandler<peripherals::USB>;
     }
 );
+use framed::*;
 
 type HallData = u16;
-static HALL: channel::Channel<
+static MSG: channel::Channel<
     embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
     HallData,
     128,
@@ -156,7 +158,7 @@ async fn hall_watcher(
 ) {
     let mut op1 = OpAmp::new(op1, OpAmpSpeed::Normal);
     let mut opi = op1.buffer_int(&mut pa1, OpAmpGain::Mul16);
-    let (sx, rx) = (HALL.sender(), HALL.receiver());
+    let (sx, rx) = (MSG.sender(), MSG.receiver());
     loop {
         let va = adc.read(&mut opi);
         let _ = sx.try_send(va);
@@ -171,7 +173,7 @@ struct Disconnected {}
 impl From<EndpointError> for Disconnected {
     fn from(val: EndpointError) -> Self {
         match val {
-            EndpointError::BufferOverflow => crate::panic!("Buffer overflow"),
+            EndpointError::BufferOverflow => crate::panic!("buffer overflow"),
             EndpointError::Disabled => Disconnected {},
         }
     }
@@ -182,10 +184,20 @@ async fn report<'d, T: 'd + embassy_stm32::usb::Instance>(
 ) -> Result<(), Disconnected> {
     let mut buf = [0; 128];
     loop {
-        let read = class.read_packet(&mut buf).await?;
-        let (msg, consumed): (Message, usize) = serde_json_core::from_slice(&buf[..read]).unwrap();
-        let reply = Message::default();
-        let coded: heapless::Vec<u8, 64> = serde_json_core::to_vec(&reply).unwrap();
-        class.write_packet(&coded).await?;
+        // let read = class.read_packet(&mut buf).await?;
+        // let (msg, consumed): (Message, usize) = serde_json_core::from_slice(&buf[..read]).unwrap();
+        let msg = MSG.receive().await;
+        let reply = Message {
+            hall_volt: Some(msg),
+            ..Default::default()
+        };
+        
+        let coded: heapless::Vec<u8, 512> = serde_json_core::to_vec(&reply).unwrap();
+        let config = framed::bytes::Config::default();
+        let mut codebuf = [0; 2048];
+        let frame_codec = frame_config().to_codec();
+        let len = unwrap!(frame_codec.encode_to_slice(&coded, &mut codebuf));
+        debug!("send msg len={}", len); 
+        class.write_packet(&codebuf[..len]).await?;
     }
 }
