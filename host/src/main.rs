@@ -59,14 +59,26 @@ async fn handle_g4(portname: String) -> Result<()> {
         match dev.try_read(&mut buf[skip..]) {
             Result::Ok(n) => {
                 if n > 0 {
-                    // buf.iter().position();
                     println!("read_len={}, {:?}", n, &buf[..10]);
                     let mut copy = buf.clone();
-                    let (decoded, remainder): (Message, _) =
-                        postcard::take_from_bytes_cobs(&mut copy[..n]).unwrap();
-                    buf[..remainder.len()].copy_from_slice(&remainder);
-                    skip = remainder.len();
-                    dbg!(&decoded);
+                    match postcard::take_from_bytes_cobs::<Message>(&mut copy[..(n + skip)]) {
+                        Ok((decoded, remainder)) => {
+                            buf[..remainder.len()].copy_from_slice(&remainder);
+                            skip = remainder.len();
+                            dbg!(&decoded);
+                        }
+                        Err(er) => {
+                            println!("read, {:?}", er);
+                            let sentinel = buf.iter().position(|k| *k == 0);
+                            if let Some(pos) = sentinel {
+                                buf[..(copy.len() - pos)].copy_from_slice(&copy[pos..]);
+                                skip = 0;
+                            } else {
+                                buf.fill(0);
+                                skip = 0;
+                            }
+                        }
+                    }
                 }
             }
             Result::Err(er) => {
@@ -76,7 +88,6 @@ async fn handle_g4(portname: String) -> Result<()> {
             }
         }
     }
-
     Ok(())
 }
 

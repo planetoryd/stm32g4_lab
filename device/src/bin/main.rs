@@ -190,7 +190,7 @@ async fn report<'d, T: 'd + embassy_stm32::usb::Instance>(
             hall_volt: Some(msg),
             ..Default::default()
         };
-        
+        debug!("encode reply");
         let coded: heapless::Vec<u8, 2048> = postcard::to_vec_cobs(&reply).unwrap();
         debug!("send msg len={}", coded.len());
         class.write_packet(&coded).await?;
