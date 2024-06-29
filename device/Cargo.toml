@@ -12,7 +12,7 @@ cortex-m = { version = "0.7.7", features = [
     "critical-section-single-core",
 ] }
 cortex-m-rt = "0.7.3"
-defmt = { version = "0.3.8", optional = true }
+defmt = { version = "0.3.8", optional = true, default-features = false }
 defmt-rtt = { version = "0.4.1", optional = true }
 embassy-executor = { version = "0.5.0", features = [
     "arch-cortex-m",
@@ -37,8 +37,8 @@ panic-probe = { version = "0.3.2", features = ["print-defmt"], optional = true }
 embassy-usb = { version = "0.2", path = "../embassy/embassy-usb" }
 common = { version = "0.1.0", path = "../common" }
 serde-json-core = "0.5.1"
-framed = { version = "0.4.3", default-features = false, features = ["use_nightly"] }
 futures-util = { version = "0.3.30", default-features = false }
+postcard = { version = "1.0.8", default-features = false, features = ["heapless", "use-defmt"] }
 
 
 [[bin]]

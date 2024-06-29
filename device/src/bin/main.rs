@@ -3,7 +3,7 @@
 
 use core::future::{pending, Pending};
 
-use common::{frame_config, Message};
+use common::Message;
 use defmt::*;
 use embassy_sync::channel;
 use embassy_usb::{class::cdc_acm::CdcAcmClass, driver::EndpointError, UsbDevice};
@@ -36,7 +36,6 @@ bind_interrupts!(
         USB_LP => usb::InterruptHandler<peripherals::USB>;
     }
 );
-use framed::*;
 
 type HallData = u16;
 static MSG: channel::Channel<
@@ -192,12 +191,8 @@ async fn report<'d, T: 'd + embassy_stm32::usb::Instance>(
             ..Default::default()
         };
         
-        let coded: heapless::Vec<u8, 512> = serde_json_core::to_vec(&reply).unwrap();
-        let config = framed::bytes::Config::default();
-        let mut codebuf = [0; 2048];
-        let frame_codec = frame_config().to_codec();
-        let len = unwrap!(frame_codec.encode_to_slice(&coded, &mut codebuf));
-        debug!("send msg len={}", len); 
-        class.write_packet(&codebuf[..len]).await?;
+        let coded: heapless::Vec<u8, 2048> = postcard::to_vec_cobs(&reply).unwrap();
+        debug!("send msg len={}", coded.len());
+        class.write_packet(&coded).await?;
     }
 }

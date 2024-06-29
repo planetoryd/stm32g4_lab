@@ -52,17 +52,21 @@ async fn handle_g4(portname: String) -> Result<()> {
     // let msg = Message::default();
     // let coded = serde_json::to_vec(&msg)?;
     // dev.write_all(&coded).await?;
-    
+
     let mut buf = [0; 2048];
+    let mut skip = 0;
     loop {
-        match dev.try_read(&mut buf) {
+        match dev.try_read(&mut buf[skip..]) {
             Result::Ok(n) => {
                 if n > 0 {
                     // buf.iter().position();
                     println!("read_len={}, {:?}", n, &buf[..10]);
-                    let decoded: Message = serde_json::from_slice(&buf[..n])?;
+                    let mut copy = buf.clone();
+                    let (decoded, remainder): (Message, _) =
+                        postcard::take_from_bytes_cobs(&mut copy[..n]).unwrap();
+                    buf[..remainder.len()].copy_from_slice(&remainder);
+                    skip = remainder.len();
                     dbg!(&decoded);
-                    buf.fill(0);
                 }
             }
             Result::Err(er) => {
@@ -77,16 +81,15 @@ async fn handle_g4(portname: String) -> Result<()> {
 }
 
 #[test]
-fn testser() {
-    let reply = Message::default();
-    let coded: serde_json_core::heapless::Vec<u8, 64> = serde_json_core::to_vec(&reply).unwrap();
-    let p = coded.as_slice();
-    println!("{:?}", p);
+fn test_cobs() {
+    let msg = Message {
+        hall_speed: Some(1),
+        hall_volt: Some(3),
+    };
+    let mut vec = [0; 1024];
+    let mut coded = postcard::to_slice_cobs(&msg, &mut vec).unwrap();
+    dbg!(&coded, coded.len());
 
-    let coded = serde_json::to_vec(&reply).unwrap();
-    let p = coded.as_slice();
-    println!("{:?}, {}", p, p.len());
-
-    let decode: Message = serde_json::from_slice(p).unwrap();
-    dbg!(decode);
+    let (decoded, buf): (Message, _) = postcard::take_from_bytes_cobs(&mut coded).unwrap();
+    dbg!(decoded);
 }
