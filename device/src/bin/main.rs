@@ -1,5 +1,6 @@
 #![no_std]
 #![no_main]
+#![feature(impl_trait_in_assoc_type)]
 
 use core::future::{pending, Pending};
 
@@ -191,8 +192,12 @@ async fn report<'d, T: 'd + embassy_stm32::usb::Instance>(
             ..Default::default()
         };
         debug!("encode reply");
-        let coded: heapless::Vec<u8, 2048> = postcard::to_vec_cobs(&reply).unwrap();
-        debug!("send msg len={}", coded.len());
-        class.write_packet(&coded).await?;
+        let rx: Result<heapless::Vec<u8, 2048>, postcard::Error> = postcard::to_vec_cobs(&reply);
+        if let Ok(coded) = rx {
+            debug!("send msg len={}", coded.len());
+            let _ = class.write_packet(&coded).await;
+        } else {
+            error!("{:?}", rx.unwrap_err())
+        }
     }
 }
