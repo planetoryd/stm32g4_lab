@@ -1,4 +1,5 @@
 #![no_std]
+#![feature(saturating_int_impl)]
 
 use framed::{bytes::Config, typed::max_encoded_len};
 use serde::{self, Deserialize, Serialize};
