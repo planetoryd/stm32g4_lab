@@ -45,6 +45,8 @@ static MSG: channel::Channel<
     128,
 > = channel::Channel::new();
 
+static HALL_INTERVAL: u64 = 1000;
+
 // todo: hall effect sensor speed meter
 // electromagnetic microbalance
 
@@ -81,7 +83,7 @@ async fn main(spawner: Spawner) {
     let mut config = embassy_usb::Config::new(0xc0de, 0xcafe);
     config.manufacturer = Some("Plein");
     config.product = Some("Lab device G4");
-    config.serial_number = Some("1");
+    config.serial_number = Some("1");   
 
     config.device_class = 0xEF;
     config.device_sub_class = 0x02;
@@ -144,7 +146,7 @@ async fn led(mut out: Output<'static>) {
         } else {
             out.toggle();
         }
-        Timer::after_millis(100).await;
+        Timer::after_millis(HALL_INTERVAL).await;
     }
 }
 
@@ -157,12 +159,12 @@ async fn hall_watcher(
     temp: Temperature,
 ) {
     let mut op1 = OpAmp::new(op1, OpAmpSpeed::Normal);
-    let mut opi = op1.buffer_int(&mut pa1, OpAmpGain::Mul16);
+    let mut opi = op1.buffer_int(&mut pa1, OpAmpGain::Mul1);
     let (sx, rx) = (MSG.sender(), MSG.receiver());
     loop {
         let va = adc.read(&mut opi);
         let _ = sx.try_send(va);
-        Timer::after_millis(100).await;
+        Timer::after_millis(HALL_INTERVAL).await;
     }
 }
 
@@ -183,7 +185,7 @@ async fn report<'d, T: 'd + embassy_stm32::usb::Instance>(
     class: &mut CdcAcmClass<'d, Driver<'d, T>>,
 ) -> Result<(), Disconnected> {
     let mut buf = [0; 128];
-    loop {
+    for _ in 0..500 {
         // let read = class.read_packet(&mut buf).await?;
         // let (msg, consumed): (Message, usize) = serde_json_core::from_slice(&buf[..read]).unwrap();
         let msg = MSG.receive().await;
@@ -191,13 +193,12 @@ async fn report<'d, T: 'd + embassy_stm32::usb::Instance>(
             hall_volt: Some(msg),
             ..Default::default()
         };
-        debug!("encode reply");
         let rx: Result<heapless::Vec<u8, 2048>, postcard::Error> = postcard::to_vec_cobs(&reply);
         if let Ok(coded) = rx {
-            debug!("send msg len={}", coded.len());
             let _ = class.write_packet(&coded).await;
         } else {
             error!("{:?}", rx.unwrap_err())
         }
     }
+    Ok(())
 }
