@@ -15,3 +15,4 @@ serialport = "4.3.0"
 tokio = { version = "1.38.0", features = ["full"] }
 tokio-serial = "5.4.4"
 postcard = { version = "1.0.8" }
+spinners = "4.1.1"

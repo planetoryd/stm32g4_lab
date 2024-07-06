@@ -2,6 +2,7 @@ use std::{
     future::{self, pending},
     io,
     str::{self, from_utf8},
+    time::Duration,
 };
 
 use anyhow::Result;
@@ -9,22 +10,48 @@ use common::*;
 use futures::{stream::FuturesUnordered, Future, SinkExt};
 use serde::{Deserialize, Serialize};
 use serialport::SerialPortType;
+use spinners::Spinner;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     task::JoinSet,
+    time::sleep,
 };
 use tokio_serial::SerialPortBuilderExt;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let ports = serialport::available_ports().expect("No ports found!");
+    let mut sp = Spinner::new(
+        spinners::Spinners::Arc,
+        "waiting for conneciton".to_owned(),
+    );
+    loop {
+        let rx = try_conn(&mut sp).await;
+        if let Ok(rx) = rx {
+            if rx {
+                break;
+            }
+        } else {
+            println!("{:?}", rx);
+        }
+        sleep(Duration::from_millis(500)).await;
+    }
+
+    // pending::<()>();
+
+    Ok(())
+}
+
+async fn try_conn(spin: &mut Spinner) -> Result<bool> {
+    let ports = serialport::available_ports()?;
     let mut fv = JoinSet::new();
     fv.spawn(async { Ok(()) });
+    let mut found = false;
     for p in ports {
         if let SerialPortType::UsbPort(u) = p.port_type {
             if u.manufacturer.as_ref().unwrap() == "Plein" {
-                println!("found device {}", u.product.unwrap());
+                spin.stop_with_message(format!("found device {}", u.product.unwrap()));
                 fv.spawn(handle_g4(p.port_name));
+                found = true;
             }
         }
     }
@@ -37,9 +64,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    // pending::<()>();
-
-    Ok(())
+    Ok(found)
 }
 
 async fn handle_g4(portname: String) -> Result<()> {
@@ -94,8 +119,7 @@ async fn handle_g4(portname: String) -> Result<()> {
 #[test]
 fn test_cobs() {
     let msg = Message {
-        hall_speed: Some(1),
-        hall_volt: Some(3),
+        hall_speed: Default::default(),
     };
     let mut vec = [0; 1024];
     let mut coded = postcard::to_slice_cobs(&msg, &mut vec).unwrap();

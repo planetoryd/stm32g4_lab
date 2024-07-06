@@ -1,12 +1,13 @@
 #![no_std]
 
+use core::mem::size_of;
+
+use heapless::Vec;
 use serde::{self, Deserialize, Serialize};
 
 pub fn add(left: u64, right: u64) -> u64 {
     left + right
 }
-
-pub const MAX_PAYLOAD: usize = 2048;
 
 #[cfg(test)]
 mod tests {
@@ -21,8 +22,13 @@ mod tests {
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone)]
 pub struct Message {
-    /// Speed from hall effect sensor
-    pub hall_speed: Option<u32>,
-    pub hall_volt: Option<u16>
+    /// Data from hall effect sensor
+    pub hall: Vec<u8, HALL_BYTES>,
 }
 
+pub const HALL_BYTES: usize = 4;
+
+pub fn constraits() {
+    // fit into one packet. note, postcard might have overhead.
+    assert!(size_of::<Message>() <= 32)
+}

@@ -46,9 +46,9 @@ checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 
 [[package]]
 name = "bitflags"
-version = "2.5.0"
+version = "2.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cf4b9d6a944f767f8e5e0db018570623c85f3d925ac718db4e06d0187adb21c1"
+checksum = "b048fb63fd8b5923fc5aa7b340d8e156aec7ec02f0c78fa8a6ddc2613f6f71de"
 
 [[package]]
 name = "byteorder"
@@ -73,6 +73,7 @@ name = "common"
 version = "0.1.0"
 dependencies = [
  "futures-util",
+ "heapless 0.7.17",
  "postcard",
  "serde",
 ]
@@ -137,7 +138,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "strsim",
- "syn 2.0.66",
+ "syn 2.0.68",
 ]
 
 [[package]]
@@ -148,7 +149,7 @@ checksum = "733cabb43482b1a1b53eee8583c2b9e8684d592215ea83efd305dd31bc2f0178"
 dependencies = [
  "darling_core",
  "quote",
- "syn 2.0.66",
+ "syn 2.0.68",
 ]
 
 [[package]]
@@ -171,7 +172,7 @@ dependencies = [
  "proc-macro-error",
  "proc-macro2",
  "quote",
- "syn 2.0.66",
+ "syn 2.0.68",
 ]
 
 [[package]]
@@ -238,7 +239,7 @@ dependencies = [
  "darling",
  "proc-macro2",
  "quote",
- "syn 2.0.66",
+ "syn 2.0.68",
 ]
 
 [[package]]
@@ -279,7 +280,7 @@ name = "embassy-stm32"
 version = "0.1.0"
 dependencies = [
  "bit_field",
- "bitflags 2.5.0",
+ "bitflags 2.6.0",
  "cfg-if",
  "cortex-m",
  "cortex-m-rt",
@@ -565,10 +566,10 @@ dependencies = [
  "embassy-time",
  "embassy-usb",
  "futures-util",
+ "heapless 0.7.17",
  "panic-halt",
  "panic-probe",
  "postcard",
- "serde-json-core",
 ]
 
 [[package]]
@@ -683,9 +684,9 @@ dependencies = [
 
 [[package]]
 name = "proc-macro2"
-version = "1.0.85"
+version = "1.0.86"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22244ce15aa966053a896d1accb3a6e68469b97c7f33f284b99f0d576879fc23"
+checksum = "5e719e8df665df0d1c8fbfd238015744736151d4445ec0836b8e628aae103b77"
 dependencies = [
  "unicode-ident",
 ]
@@ -722,12 +723,6 @@ checksum = "bfa0f585226d2e68097d4f95d113b15b83a82e819ab25717ec0590d9584ef366"
 dependencies = [
  "semver 1.0.23",
 ]
-
-[[package]]
-name = "ryu"
-version = "1.0.18"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3cb5ba0dc43242ce17de99c180e96db90b235b8a9fdc9543c96d2209116bd9f"
 
 [[package]]
 name = "scopeguard"
@@ -772,17 +767,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde-json-core"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c9e1ab533c0bc414c34920ec7e5f097101d126ed5eac1a1aac711222e0bbb33"
-dependencies = [
- "heapless 0.7.17",
- "ryu",
- "serde",
-]
-
-[[package]]
 name = "serde_derive"
 version = "1.0.203"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -790,7 +774,7 @@ checksum = "500cbc0ebeb6f46627f50f3f5811ccf6bf00643be300b4c3eabc0ef55dc5b5ba"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.66",
+ "syn 2.0.68",
 ]
 
 [[package]]
@@ -836,7 +820,7 @@ dependencies = [
 [[package]]
 name = "stm32-metapac"
 version = "15.0.0"
-source = "git+https://github.com/embassy-rs/stm32-data-generated?tag=stm32-data-a8ab0a3421ed0ca4b282f54028a0a2decacd8631#e30c7694016fa9a326f153fff84dedb0c02b8676"
+source = "git+https://github.com/embassy-rs/stm32-data-generated?tag=stm32-data-e0cfd165fd8fffaa0df66a35eeca83b228496645#bf02c35d063e1823a156468497b448ae3350a255"
 dependencies = [
  "cortex-m",
  "cortex-m-rt",
@@ -861,9 +845,9 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "2.0.66"
+version = "2.0.68"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c42f3f41a2de00b01c0aaad383c5a45241efc8b2d1eda5661812fda5f3cdcff5"
+checksum = "901fa70d88b9d6c98022e23b4136f9f3e54e4662c3bc1bd1d84a42a9a0f0c1e9"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -887,7 +871,7 @@ checksum = "46c3384250002a6d5af4d114f2845d37b57521033f30d5c3f46c4d70e1197533"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.66",
+ "syn 2.0.68",
 ]
 
 [[package]]
