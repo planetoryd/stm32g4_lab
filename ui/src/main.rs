@@ -3,11 +3,11 @@
 
 use std::any::{self, TypeId};
 use std::collections::VecDeque;
-use std::default;
 use std::future::pending;
 use std::io::Read;
 use std::mem::size_of;
 use std::time::{Duration, Instant};
+use std::{default, iter};
 
 use common::G4Message;
 use futures::channel::mpsc::Sender;
@@ -82,7 +82,7 @@ impl Application for Page {
         match msg {
             Msg::G4Conn(conn) => self.g4_conn = conn,
             Msg::G4Data(data) => {
-                println!("data {:?}", &data.hall);
+                // println!("data {:?}", &data.hall);
                 self.hall.data_points.push_slice_overwrite(&data.hall);
             }
         };
@@ -221,9 +221,9 @@ struct HallChart {
 
 impl Default for HallChart {
     fn default() -> Self {
-        HallChart {
-            data_points: HeapRb::new(200),
-        }
+        let mut h = HeapRb::new(100);
+        h.push_iter(iter::repeat(0));
+        HallChart { data_points: h }
     }
 }
 
@@ -248,53 +248,32 @@ impl Chart<Msg> for HallChart {
             .x_label_area_size(20)
             .y_label_area_size(20)
             .margin(20)
-            .build_cartesian_2d(0..self.data_points.occupied_len() * 8, -2..2)
+            .build_cartesian_2d(0..self.data_points.occupied_len() * 8, -1..2)
             .unwrap();
         c.configure_mesh()
             .bold_line_style(style::colors::BLUE.mix(0.2))
             .light_line_style(plotters::style::colors::BLUE.mix(0.1))
             .draw()
             .unwrap();
-        let mut data: Vec<_> = Vec::with_capacity(2048);
-        data.extend(
-            self.data_points
-                .iter()
-                .enumerate()
-                .map(|(x, y)| {
-                    let mut v = [0; 8];
-                    for i in 0..8 {
-                        let k = ((*y) & (1 << i)) != 0;
-                        v[i] = k.into();
-                    }
-                    v.into_iter().enumerate().map(move |(i, y)| (x * 8 + i, y))
-                })
-                .flatten(),
-        );
-        // dbg!(&data[..256]);
         c.draw_series(
-            AreaSeries::new(data, 0, style::colors::BLUE.mix(0.4))
-                .border_style(ShapeStyle::from(style::colors::BLUE).stroke_width(2)),
+            AreaSeries::new(
+                self.data_points
+                    .iter()
+                    .enumerate()
+                    .map(|(x, y)| {
+                        let mut v = [0; 8];
+                        for i in 0..8 {
+                            let k = ((*y) & (1 << i)) != 0;
+                            v[i] = k.into();
+                        }
+                        v.into_iter().enumerate().map(move |(i, y)| (x * 8 + i, y))
+                    })
+                    .flatten(),
+                0,
+                style::colors::BLUE.mix(0.4),
+            )
+            .border_style(ShapeStyle::from(style::colors::BLUE).stroke_width(2)),
         )
         .unwrap();
     }
-}
-
-#[test]
-fn bitsss() {
-    let data = [0; 3];
-    let mut d: Vec<_> = Vec::with_capacity(256);
-    d.extend(
-        data.iter()
-            .enumerate()
-            .map(|(x, y)| {
-                let mut v = [0; 8];
-                for i in 0..8 {
-                    let k = ((*y) & (1 << i)) != 0;
-                    v[i] = k.into();
-                }
-                v.into_iter().enumerate().map(move |(i, y)| (x * 8 + i, y))
-            })
-            .flatten(),
-    );
-    dbg!(&d);
 }
