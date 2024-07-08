@@ -86,7 +86,7 @@ async fn handle_g4(portname: String) -> Result<()> {
                 if n > 0 {
                     println!("read_len={}, {:?}", n, &buf[..10]);
                     let mut copy = buf.clone();
-                    match postcard::take_from_bytes_cobs::<Message>(&mut copy[..(n + skip)]) {
+                    match postcard::take_from_bytes_cobs::<G4Message>(&mut copy[..(n + skip)]) {
                         Ok((decoded, remainder)) => {
                             buf[..remainder.len()].copy_from_slice(&remainder);
                             skip = remainder.len();
@@ -118,13 +118,13 @@ async fn handle_g4(portname: String) -> Result<()> {
 
 #[test]
 fn test_cobs() {
-    let msg = Message {
-        hall_speed: Default::default(),
+    let msg = G4Message {
+        hall: Default::default(),
     };
     let mut vec = [0; 1024];
     let mut coded = postcard::to_slice_cobs(&msg, &mut vec).unwrap();
     dbg!(&coded, coded.len());
 
-    let (decoded, buf): (Message, _) = postcard::take_from_bytes_cobs(&mut coded).unwrap();
+    let (decoded, buf): (G4Message, _) = postcard::take_from_bytes_cobs(&mut coded).unwrap();
     dbg!(decoded);
 }

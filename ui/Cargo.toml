@@ -1,0 +1,17 @@
+[package]
+name = "ui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+iced = { version = "0.12", features = ["canvas", "debug", "tokio"] }
+plotters = "0.3.6"
+plotters-iced = "0.10.0"
+serialport = "4.3.0"
+tokio = { version = "1.38.0", features = ["full"] }
+tokio-serial = "5.4.4"
+postcard = { version = "1.0.8" }
+anyhow = "1.0.86"
+common = { version = "0.1.0", path = "../common" }
+futures = "0.3.30"
+iced_aw = "0.9.3"

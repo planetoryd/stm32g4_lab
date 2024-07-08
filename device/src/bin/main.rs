@@ -4,7 +4,7 @@
 
 use core::future::{pending, Pending};
 
-use common::{Message, HALL_BYTES};
+use common::{G4Message, HALL_BYTES};
 use defmt::*;
 use embassy_sync::{
     blocking_mutex::{raw::CriticalSectionRawMutex, CriticalSectionMutex},
@@ -249,7 +249,7 @@ async fn report<'d, T: 'd + embassy_stm32::usb::Instance>(
         for _ in 0..HALL_BYTES {
             unwrap!(hall.push(HALL_SPEED.receive().await))
         }
-        let reply = Message { hall };
+        let reply = G4Message { hall };
         let rx: Result<heapless::Vec<u8, 64>, postcard::Error> = postcard::to_vec_cobs(&reply);
         if let Ok(coded) = rx {
             debug!("send upstream {}", coded.len());

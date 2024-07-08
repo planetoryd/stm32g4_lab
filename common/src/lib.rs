@@ -21,7 +21,7 @@ mod tests {
 }
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone)]
-pub struct Message {
+pub struct G4Message {
     /// Data from hall effect sensor
     pub hall: Vec<u8, HALL_BYTES>,
 }
@@ -30,5 +30,5 @@ pub const HALL_BYTES: usize = 4;
 
 pub fn constraits() {
     // fit into one packet. note, postcard might have overhead.
-    assert!(size_of::<Message>() <= 32)
+    assert!(size_of::<G4Message>() <= 32)
 }
