@@ -201,7 +201,7 @@ async fn hall_digital(pa1: PA1) {
         for pos in 0..8 {
             Timer::after_micros(MICROS as u64).await;
             let le = p.is_high() as u8;
-            byte |= le >> pos;
+            byte |= le << pos;
         }
         let _ = HALL_SPEED.sender().try_send(byte);
     }
