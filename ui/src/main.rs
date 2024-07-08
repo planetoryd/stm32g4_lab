@@ -1,7 +1,11 @@
+#![allow(unreachable_code)]
+#![feature(decl_macro)]
+
 use std::any::{self, TypeId};
 use std::collections::VecDeque;
 use std::default;
 use std::future::pending;
+use std::io::Read;
 use std::time::{Duration, Instant};
 
 use common::G4Message;
@@ -14,7 +18,10 @@ use iced::{Application, Command, Element, Settings, Theme};
 use iced_aw::{spinner, Spinner};
 use plotters::style;
 use plotters_iced::{Chart, ChartWidget};
-use serialport::SerialPortType;
+use ringbuf::traits::{Consumer, Observer, Producer, RingBuffer};
+use ringbuf::HeapRb;
+use serialport::{SerialPort, SerialPortType};
+use tokio::io::AsyncReadExt;
 use tokio::task::JoinSet;
 use tokio::time::sleep;
 use tokio_serial::SerialPortBuilderExt;
@@ -22,6 +29,10 @@ use tokio_serial::SerialPortBuilderExt;
 // hall sensor line plot
 // heater temp plot
 // dac output voltage plot
+
+macro forever() {
+    pending::<()>()
+}
 
 pub fn main() -> iced::Result {
     Page::run(Settings {
@@ -59,7 +70,6 @@ impl Application for Page {
 
     fn new(_flags: ()) -> (Page, Command<Self::Message>) {
         let mut k = Page::default();
-        k.hall.data_points.extend([0, 0, 1, 0, 1]);
         (k, Command::none())
     }
 
@@ -71,7 +81,7 @@ impl Application for Page {
         match msg {
             Msg::G4Conn(conn) => self.g4_conn = conn,
             Msg::G4Data(data) => {
-                todo!()
+                self.hall.data_points.push_slice_overwrite(&data.hall);
             }
         };
         Command::none()
@@ -113,15 +123,16 @@ impl Application for Page {
                 if let Err(er) = (async move {
                     loop {
                         sx.send(Msg::G4Conn(ConnState::Waiting)).await?;
+
                         let try_conn = |mut sx: Sender<Msg>| async move {
                             let ports = serialport::available_ports()?;
                             let mut fv = JoinSet::new();
-                            fv.spawn(async { Ok(()) });
+                            // fv.spawn(async { Ok(()) });
                             for p in ports {
                                 if let SerialPortType::UsbPort(u) = p.port_type {
                                     if u.manufacturer.as_ref().unwrap() == "Plein" {
                                         sx.send(Msg::G4Conn(ConnState::Connected)).await?;
-                                        fv.spawn(handle_g4(p.port_name));
+                                        fv.spawn(handle_g4(p.port_name, sx.clone()));
                                     }
                                 }
                             }
@@ -136,12 +147,14 @@ impl Application for Page {
 
                             anyhow::Ok(())
                         };
+
                         loop {
+                            println!("try conn");
                             (try_conn)(sx.clone()).await?;
-                            sleep(Duration::from_millis(500)).await;
+                            println!("disconnected");
+                            sleep(Duration::from_millis(1000)).await;
                         }
 
-                        pending::<()>().await;
                     }
                     #[allow(unreachable_code)]
                     anyhow::Ok(())
@@ -158,53 +171,59 @@ impl Application for Page {
     }
 }
 
-async fn handle_g4(portname: String) -> anyhow::Result<()> {
+async fn handle_g4(portname: String, mut sx: Sender<Msg>) -> anyhow::Result<()> {
     println!("handle g4 {}", portname);
     let mut dev = tokio_serial::new(portname, 9600).open_native_async()?;
 
     dev.set_exclusive(true)?;
 
-    let mut buf = [0; 2048];
+    let mut buf = [0; 128];
     let mut skip = 0;
+    
     loop {
-        match dev.try_read(&mut buf[skip..]) {
-            Result::Ok(n) => {
-                if n > 0 {
-                    println!("read_len={}, {:?}", n, &buf[..10]);
-                    let mut copy = buf.clone();
-                    match postcard::take_from_bytes_cobs::<G4Message>(&mut copy[..(n + skip)]) {
-                        Ok((decoded, remainder)) => {
-                            buf[..remainder.len()].copy_from_slice(&remainder);
-                            skip = remainder.len();
-                            dbg!(&decoded);
-                        }
-                        Err(er) => {
-                            println!("read, {:?}", er);
-                            let sentinel = buf.iter().position(|k| *k == 0);
-                            if let Some(pos) = sentinel {
-                                buf[..(copy.len() - pos)].copy_from_slice(&copy[pos..]);
-                                skip = 0;
-                            } else {
-                                buf.fill(0);
-                                skip = 0;
-                            }
-                        }
+        // println!("R");
+        let n = AsyncReadExt::read(&mut dev, &mut buf).await?;
+        if n > 0 {
+            // println!("read_len={}, {:?}", n, &buf[..10]);
+            let mut copy = buf.clone();
+            match postcard::take_from_bytes_cobs::<G4Message>(&mut copy[..(n + skip)]) {
+                Ok((decoded, remainder)) => {
+                    buf[..remainder.len()].copy_from_slice(&remainder);
+                    skip = remainder.len();
+                    sx.send(Msg::G4Data(decoded)).await?;
+                }
+                Err(er) => {
+                    println!("read err, {:?}", er);
+                    let sentinel = buf.iter().position(|k| *k == 0);
+                    if let Some(pos) = sentinel {
+                        buf[..(copy.len() - pos)].copy_from_slice(&copy[pos..]);
+                        skip = 0;
+                    } else {
+                        buf.fill(0);
+                        skip = 0;
                     }
+                    println!("fixed buf");
                 }
             }
-            Result::Err(er) => {
-                if er.kind() == std::io::ErrorKind::WouldBlock {
-                    dev.readable().await?;
-                }
-            }
+        } else {
+            println!("EOF");
+            break;
         }
     }
+    
     Ok(())
 }
 
-#[derive(Default)]
 struct HallChart {
-    data_points: VecDeque<i32>,
+    data_points: HeapRb<u8>,
+}
+
+impl Default for HallChart {
+    fn default() -> Self {
+        HallChart {
+            data_points: HeapRb::new(200),
+        }
+    }
 }
 
 impl HallChart {
@@ -228,7 +247,7 @@ impl Chart<Msg> for HallChart {
             .x_label_area_size(20)
             .y_label_area_size(20)
             .margin(20)
-            .build_cartesian_2d(0..5, -2..2)
+            .build_cartesian_2d(0..self.data_points.occupied_len(), -2..2)
             .unwrap();
         c.configure_mesh()
             .bold_line_style(style::colors::BLUE.mix(0.2))
@@ -240,7 +259,7 @@ impl Chart<Msg> for HallChart {
                 self.data_points
                     .iter()
                     .enumerate()
-                    .map(|(x, y)| (x.try_into().unwrap(), *y)),
+                    .map(|(x, y)| (x.try_into().unwrap(), (*y).try_into().unwrap())),
                 0,
                 style::colors::BLUE.mix(0.4),
             )
