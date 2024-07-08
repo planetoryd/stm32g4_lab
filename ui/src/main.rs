@@ -4,7 +4,6 @@
 use std::any::{self, TypeId};
 use std::collections::VecDeque;
 use std::future::pending;
-use std::io::Read;
 use std::mem::size_of;
 use std::time::{Duration, Instant};
 use std::{default, iter};
@@ -20,7 +19,7 @@ use iced_aw::{spinner, Spinner};
 use plotters::style;
 use plotters_iced::{Chart, ChartWidget};
 use ringbuf::traits::{Consumer, Observer, Producer, RingBuffer};
-use ringbuf::HeapRb;
+use ringbuf::{HeapRb, LocalRb};
 use serialport::{SerialPort, SerialPortType};
 use tokio::io::AsyncReadExt;
 use tokio::task::JoinSet;
@@ -141,7 +140,13 @@ impl Application for Page {
 
                             loop {
                                 if let Some(rx) = fv.join_next().await {
-                                    rx??;
+                                    let k: Result<(), anyhow::Error> = rx?;
+                                    match k {
+                                        Err(e) => {
+                                            println!("G4 handler error {:?}", e);
+                                        }
+                                        _ => {}
+                                    }
                                 } else {
                                     break;
                                 }
@@ -177,38 +182,48 @@ async fn handle_g4(portname: String, mut sx: Sender<Msg>) -> anyhow::Result<()> 
     let mut dev = tokio_serial::new(portname, 9600).open_native_async()?;
 
     dev.set_exclusive(true)?;
-
+    use ringbuf::*;
+    let mut rbuf: LocalRb<storage::Heap<u8>> = LocalRb::new(4096);
     let mut buf = [0; 128];
-    let mut skip = 0;
+    dev.clear(serialport::ClearBuffer::All)?;
 
     loop {
-        // println!("R");
-        let n = AsyncReadExt::read(&mut dev, &mut buf).await?;
-        if n > 0 {
-            // println!("read_len={}, {:?}", n, &buf[..10]);
-            let mut copy = buf.clone();
-            match postcard::take_from_bytes_cobs::<G4Message>(&mut copy[..(n + skip)]) {
-                Ok((decoded, remainder)) => {
-                    buf[..remainder.len()].copy_from_slice(&remainder);
-                    skip = remainder.len();
-                    sx.send(Msg::G4Data(decoded)).await?;
-                }
-                Err(er) => {
-                    println!("read err, {:?}", er);
-                    let sentinel = buf.iter().position(|k| *k == 0);
-                    if let Some(pos) = sentinel {
-                        buf[..(copy.len() - pos)].copy_from_slice(&copy[pos..]);
-                        skip = 0;
+        let n = dev.read(&mut buf).await?;
+        if n == 0 {
+            anyhow::bail!("device eof")
+        }
+
+        let k = rbuf.push_iter(buf.into_iter());
+        // try to find a complete packet and consume it.
+        let mut packet = Vec::with_capacity(64);
+        for b in rbuf.pop_iter() {
+            match packet.len() {
+                0 => {
+                    if b == 0 {
+                        continue;
                     } else {
-                        buf.fill(0);
-                        skip = 0;
+                        packet.push(b)
                     }
-                    println!("fixed buf");
+                }
+                _ => {
+                    if b == 0 {
+                        packet.push(0);
+                        break;
+                    } else {
+                        packet.push(b);
+                    }
                 }
             }
-        } else {
-            println!("EOF");
-            break;
+        }
+        let des: Result<G4Message, postcard::Error> = postcard::from_bytes_cobs(&mut packet);
+        match des {
+            Ok(decoded) => {
+                let s = Msg::G4Data(decoded);
+                sx.send(s).await?;
+            }
+            Err(er) => {
+                println!("read err, {:?}", er);
+            }
         }
     }
 
