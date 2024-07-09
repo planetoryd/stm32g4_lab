@@ -8,11 +8,11 @@ use std::mem::size_of;
 use std::time::{Duration, Instant};
 use std::{default, iter};
 
-use common::{G4Message, BUF_SIZE, MAX_PACKET_SIZE};
+use common::{G4Message, G4Settings, BUF_SIZE, FREQ_PRESETS, MAX_PACKET_SIZE};
 use futures::channel::mpsc::Sender;
 use futures::SinkExt;
 use iced::alignment::{Horizontal, Vertical};
-use iced::widget::{self, column, container, row, text, Column, Container, Row};
+use iced::widget::{self, column, container, row, slider, text, Column, Container, Row};
 use iced::{executor, Length};
 use iced::{Application, Command, Element, Settings, Theme};
 use iced_aw::{spinner, Spinner};
@@ -47,15 +47,17 @@ pub fn main() -> iced::Result {
 struct Page {
     pub hall: HallChart,
     pub g4_conn: ConnState,
+    pub g4_settings: G4Settings
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum Msg {
     G4Conn(ConnState),
     G4Data(G4Message),
+    Null,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 enum ConnState {
     #[default]
     Waiting,
@@ -86,6 +88,7 @@ impl Application for Page {
                 println!("data len {}", data.hall.len());
                 self.hall.data_points.push_slice_overwrite(&data.hall);
             }
+            _ => (),
         };
         Command::none()
     }
@@ -105,14 +108,30 @@ impl Application for Page {
                 .width(Length::Fill)
                 .height(Length::Fill),
             ),
-            ConnState::Connected | ConnState::Disconnected => {
-                widget::row([column!(self.hall.view()).into()])
-                    .align_items(iced::Alignment::Center)
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .spacing(20)
-                    .into()
-            }
+            ConnState::Connected | ConnState::Disconnected => widget::row([
+                column!(self.hall.view()).into(),
+                column!(
+                    text("Sampling interval"),
+                    slider(0..=5u32, 0, |t| {
+                        let val = FREQ_PRESETS[t as usize];
+                        Msg::Null
+                    }),
+                    text("Refresh interval"),
+                    slider(0..=12u32, 2, |t| {
+                        let val_us: usize = 2usize.pow(t);
+                        Msg::Null
+                    })
+                )
+                .width(200)
+                .spacing(10)
+                .into(),
+            ])
+            .align_items(iced::Alignment::Center)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .spacing(0)
+            .padding(20)
+            .into(),
         })
         .into()
     }

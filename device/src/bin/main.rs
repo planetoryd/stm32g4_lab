@@ -6,15 +6,20 @@
 
 use core::future::{pending, Pending};
 
-use common::{G4Message, HALL_BYTES};
+use common::{G4Command, G4Message, HALL_BYTES, MAX_PACKET_SIZE};
 use defmt::*;
+use embassy_futures::join;
 use embassy_sync::{
     blocking_mutex::{raw::CriticalSectionRawMutex, CriticalSectionMutex},
     channel,
     pubsub::PubSubChannel,
     signal::Signal,
 };
-use embassy_usb::{class::cdc_acm::CdcAcmClass, driver::EndpointError, UsbDevice};
+use embassy_usb::{
+    class::cdc_acm::{self, CdcAcmClass},
+    driver::EndpointError,
+    UsbDevice,
+};
 
 use futures_util::Stream;
 use heapless::Vec;
@@ -28,6 +33,7 @@ use embassy_executor::{SpawnToken, Spawner};
 use embassy_stm32::{
     adc::{self, Adc, Temperature, VrefInt},
     bind_interrupts,
+    dma::WritableRingBuffer,
     exti::ExtiInput,
     gpio::{self, Level, Output, Pull, Speed},
     opamp::{self, *},
@@ -113,22 +119,23 @@ async fn main(spawner: Spawner) {
     );
 
     let mut class = embassy_usb::class::cdc_acm::CdcAcmClass::new(&mut builder, &mut state, 64);
-    info!("usb max packet size, {}", class.max_packet_size());
-
+    let (mut sx, mut rx) = class.split();
+    info!("usb max packet size, {}", sx.max_packet_size());
     let mut usb = builder.build();
     let usb_fut = usb.run();
+
     let report_fut = async {
         let sig = unsafe { USB_SIGNAL.publisher() }.unwrap();
         loop {
             info!("waiting for usb");
-            class.wait_connection().await;
+            sx.wait_connection().await;
             unsafe {
                 USB_STATE = UsbState::Connected;
                 sig.publish(USB_STATE).await;
             }
             info!("Connected");
-            let _ = report(&mut class).await;
-            info!("Disconnected");
+            let x = join::join(report(&mut sx), listen(&mut rx)).await;
+            info!("Disconnected, {:?}", x);
             unsafe {
                 USB_STATE = UsbState::Waiting;
                 sig.publish(USB_STATE).await;
@@ -219,6 +226,7 @@ enum UsbState {
     Connected,
 }
 
+#[derive(Format)]
 struct Disconnected {}
 
 impl From<EndpointError> for Disconnected {
@@ -230,10 +238,53 @@ impl From<EndpointError> for Disconnected {
     }
 }
 
-async fn report<'d, T: 'd + embassy_stm32::usb::Instance>(
-    class: &mut CdcAcmClass<'d, Driver<'d, T>>,
+async fn listen<'d, T: 'd + embassy_stm32::usb::Instance>(
+    rx: &mut cdc_acm::Receiver<'d, Driver<'d, T>>,
 ) -> Result<(), Disconnected> {
-    let mut buf = [0; 128];
+    info!("listening for commands");
+    unsafe {
+        let mut usb = USB_SIGNAL.subscriber().unwrap();
+        loop {
+            if USB_STATE == UsbState::Connected
+                || usb.next_message_pure().await == UsbState::Connected
+            {
+                break;
+            }
+        }
+    }
+
+    let mut remainder: Vec<u8, MAX_PACKET_SIZE> = Vec::new();
+    loop {
+        let mut buf: Vec<u8, MAX_PACKET_SIZE>;
+        if remainder.len() > 0 {
+            buf = remainder;
+            remainder = Vec::new();
+        } else {
+            buf = Vec::new();
+        }
+        let rd = rx.read_packet(&mut buf).await?;
+        if rd == 0 {
+            Timer::after_secs(2).await;
+            continue;
+        }
+        let dx = postcard::take_from_bytes_cobs::<G4Command>(&mut buf);
+        match dx {
+            Ok((decoded, r)) => {
+                info!("{:?}", &decoded);
+                remainder.clear();
+                remainder[..r.len()].copy_from_slice(&r);
+            }
+            Err(e) => {
+                warn!("{:?}", e);
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn report<'d, T: 'd + embassy_stm32::usb::Instance>(
+    class: &mut cdc_acm::Sender<'d, Driver<'d, T>>,
+) -> Result<(), Disconnected> {
     info!("reporting enabled");
     unsafe {
         let mut usb = USB_SIGNAL.subscriber().unwrap();
@@ -245,7 +296,7 @@ async fn report<'d, T: 'd + embassy_stm32::usb::Instance>(
             }
         }
     }
-    for _ in 0..500 {
+    loop {
         // let read = class.read_packet(&mut buf).await?;
         let mut hall = Vec::new();
         for _ in 0..HALL_BYTES {

@@ -11,3 +11,4 @@ postcard = { version = "1.0.8", default-features = false, features = [
 ] }
 serde = { version = "1.0.203", features = ["derive"], default-features = false }
 heapless = { version = "0.7.0", default-features = false, features = ["serde"] }
+defmt = "0.3.8"
