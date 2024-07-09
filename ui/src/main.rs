@@ -8,7 +8,7 @@ use std::mem::size_of;
 use std::time::{Duration, Instant};
 use std::{default, iter};
 
-use common::G4Message;
+use common::{G4Message, BUF_SIZE, MAX_PACKET_SIZE};
 use futures::channel::mpsc::Sender;
 use futures::SinkExt;
 use iced::alignment::{Horizontal, Vertical};
@@ -185,12 +185,12 @@ async fn handle_g4(portname: String, mut sx: Sender<Msg>) -> anyhow::Result<()> 
 
     dev.set_exclusive(true)?;
     use ringbuf::*;
-    let mut rbuf: LocalRb<storage::Heap<u8>> = LocalRb::new(4096);
+    let mut rbuf: LocalRb<storage::Heap<u8>> = LocalRb::new(BUF_SIZE);
     dev.clear(serialport::ClearBuffer::All)?;
 
     loop {
-        let mut readbuf = Vec::with_capacity(4096);
-        let mut packet = Vec::with_capacity(2048);
+        let mut readbuf = Vec::with_capacity(BUF_SIZE);
+        let mut packet = Vec::with_capacity(BUF_SIZE);
         let mut terminated = false;
         while !terminated {
             readbuf.clear();
