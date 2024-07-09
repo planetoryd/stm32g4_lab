@@ -21,6 +21,8 @@ use plotters_iced::{Chart, ChartWidget};
 use ringbuf::traits::{Consumer, Observer, Producer, RingBuffer};
 use ringbuf::{HeapRb, LocalRb};
 use serialport::{SerialPort, SerialPortType};
+use spectrum_analyzer::samples_fft_to_spectrum;
+use spectrum_analyzer::windows::hann_window;
 use tokio::io::AsyncReadExt;
 use tokio::task::JoinSet;
 use tokio::time::sleep;
@@ -81,7 +83,7 @@ impl Application for Page {
         match msg {
             Msg::G4Conn(conn) => self.g4_conn = conn,
             Msg::G4Data(data) => {
-                // println!("data {:?}", &data.hall);
+                println!("data len {}", data.hall.len());
                 self.hall.data_points.push_slice_overwrite(&data.hall);
             }
         };
@@ -184,42 +186,50 @@ async fn handle_g4(portname: String, mut sx: Sender<Msg>) -> anyhow::Result<()> 
     dev.set_exclusive(true)?;
     use ringbuf::*;
     let mut rbuf: LocalRb<storage::Heap<u8>> = LocalRb::new(4096);
-    let mut buf = [0; 128];
     dev.clear(serialport::ClearBuffer::All)?;
 
     loop {
-        let n = dev.read(&mut buf).await?;
-        if n == 0 {
-            anyhow::bail!("device eof")
-        }
-
-        let k = rbuf.push_iter(buf.into_iter());
-        // try to find a complete packet and consume it.
-        let mut packet = Vec::with_capacity(64);
-        for b in rbuf.pop_iter() {
-            match packet.len() {
-                0 => {
-                    if b == 0 {
-                        continue;
-                    } else {
-                        packet.push(b)
+        let mut readbuf = Vec::with_capacity(4096);
+        let mut packet = Vec::with_capacity(2048);
+        let mut terminated = false;
+        while !terminated {
+            readbuf.clear();
+            let n = dev.read_buf(&mut readbuf).await?;
+            if n == 0 {
+                anyhow::bail!("device eof")
+            }
+            let k = rbuf.push_slice(&readbuf[..n]);
+            for b in rbuf.pop_iter() {
+                match packet.len() {
+                    0 => {
+                        if b == 0 {
+                            continue;
+                        } else {
+                            packet.push(b)
+                        }
                     }
-                }
-                _ => {
-                    if b == 0 {
-                        packet.push(0);
-                        break;
-                    } else {
-                        packet.push(b);
+                    _ => {
+                        if b == 0 {
+                            packet.push(0);
+                            terminated = true;
+                            break;
+                        } else {
+                            packet.push(b);
+                        }
                     }
                 }
             }
         }
+
+        // println!("packet fin {}", packet.len());
+
         let des: Result<G4Message, postcard::Error> = postcard::from_bytes_cobs(&mut packet);
         match des {
             Ok(decoded) => {
+                println!("send {}", decoded.hall.len());
                 let s = Msg::G4Data(decoded);
                 sx.send(s).await?;
+                println!("sent");
             }
             Err(er) => {
                 println!("read err, {:?}", er);
@@ -291,4 +301,18 @@ impl Chart<Msg> for HallChart {
         )
         .unwrap();
     }
+}
+
+#[test]
+fn spect() -> anyhow::Result<()> {
+    let samples = [0f32, 1., 0., 0., 1., 0., 0., 1.];
+    let w = hann_window(&samples[..]);
+    dbg!(&w);
+    let spec =
+        samples_fft_to_spectrum(&w, 4, spectrum_analyzer::FrequencyLimit::All, None).unwrap();
+    for (fr, v) in spec.data().iter() {
+        println!("{}hz -> {}", fr, v);
+    }
+
+    Ok(())
 }

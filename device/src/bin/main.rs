@@ -1,6 +1,8 @@
 #![no_std]
 #![no_main]
 #![feature(impl_trait_in_assoc_type)]
+#![feature(iter_next_chunk)]
+#![feature(iter_array_chunks)]
 
 use core::future::{pending, Pending};
 
@@ -250,10 +252,16 @@ async fn report<'d, T: 'd + embassy_stm32::usb::Instance>(
             unwrap!(hall.push(HALL_SPEED.receive().await))
         }
         let reply = G4Message { hall };
-        let rx: Result<heapless::Vec<u8, 64>, postcard::Error> = postcard::to_vec_cobs(&reply);
+        let rx: Result<heapless::Vec<u8, 1024>, postcard::Error> = postcard::to_vec_cobs(&reply);
         if let Ok(coded) = rx {
             debug!("send upstream {}", coded.len());
-            let _ = class.write_packet(&coded).await;
+            let mut chunks = coded.into_iter().array_chunks::<64>();
+            while let Some(p) = chunks.next() {
+                class.write_packet(&p).await?;
+            }
+            if let Some(p) = chunks.into_remainder() {
+                class.write_packet(p.as_slice()).await?;
+            }
         } else {
             error!("{:?}", rx.unwrap_err())
         }

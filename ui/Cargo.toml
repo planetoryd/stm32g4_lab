@@ -16,3 +16,4 @@ common = { version = "0.1.0", path = "../common" }
 futures = "0.3.30"
 iced_aw = "0.9.3"
 ringbuf = "0.4.1"
+spectrum-analyzer = "1.5.0"

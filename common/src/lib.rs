@@ -26,9 +26,9 @@ pub struct G4Message {
     pub hall: Vec<u8, HALL_BYTES>,
 }
 
-pub const HALL_BYTES: usize = 4;
+pub const HALL_BYTES: usize = 256;
 
 pub fn constraits() {
     // fit into one packet. note, postcard might have overhead.
-    assert!(size_of::<G4Message>() <= 32)
+    // assert!(size_of::<G4Message>() <= 32)
 }
