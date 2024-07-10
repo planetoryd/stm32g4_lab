@@ -5,12 +5,17 @@ use std::any::{self, TypeId};
 use std::collections::VecDeque;
 use std::future::pending;
 use std::mem::size_of;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 use std::{default, iter};
 
-use common::{G4Message, G4Settings, BUF_SIZE, FREQ_PRESETS, MAX_PACKET_SIZE};
-use futures::channel::mpsc::Sender;
-use futures::SinkExt;
+use common::{
+    G4Command, G4Message, G4Settings, Setting, SettingState, BUF_SIZE, FREQ_PRESETS,
+    MAX_PACKET_SIZE,
+};
+use futures::channel::mpsc::{self, Receiver, Sender};
+use futures::lock::Mutex;
+use futures::{join, SinkExt, StreamExt};
 use iced::alignment::{Horizontal, Vertical};
 use iced::widget::{self, column, container, row, slider, text, Column, Container, Row};
 use iced::{executor, Length};
@@ -23,7 +28,8 @@ use ringbuf::{HeapRb, LocalRb};
 use serialport::{SerialPort, SerialPortType};
 use spectrum_analyzer::samples_fft_to_spectrum;
 use spectrum_analyzer::windows::hann_window;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::RwLock;
 use tokio::task::JoinSet;
 use tokio::time::sleep;
 use tokio_serial::SerialPortBuilderExt;
@@ -37,6 +43,8 @@ macro forever() {
 }
 
 pub fn main() -> iced::Result {
+    console_subscriber::init();
+
     Page::run(Settings {
         antialiasing: true,
         ..Settings::default()
@@ -47,15 +55,21 @@ pub fn main() -> iced::Result {
 struct Page {
     pub hall: HallChart,
     pub g4_conn: ConnState,
-    pub g4_settings: G4Settings
+    pub g4_notify: Option<Sender<Notify>>,
 }
 
 #[derive(Debug, Clone)]
 enum Msg {
     G4Conn(ConnState),
     G4Data(G4Message),
+    G4Setting(Setting),
     Null,
 }
+
+struct Notify;
+
+static mut G4_RX: Option<Receiver<Notify>> = None;
+static mut G4_CONF: Option<G4Settings> = None;
 
 #[derive(Debug, Default, Clone)]
 enum ConnState {
@@ -66,6 +80,14 @@ enum ConnState {
     Disconnected,
 }
 
+#[test]
+fn test_vec() {
+    let mut a = [0; 8];
+    a[3..4].fill(1);
+    a.copy_within(3..4, 0);
+    dbg!(&a);
+}
+
 impl Application for Page {
     type Executor = executor::Default;
     type Flags = ();
@@ -74,6 +96,13 @@ impl Application for Page {
 
     fn new(_flags: ()) -> (Page, Command<Self::Message>) {
         let mut k = Page::default();
+        let (s, r) = mpsc::channel(1);
+        k.g4_notify = Some(s);
+        unsafe {
+            G4_RX = Some(r);
+            G4_CONF = Some(Default::default());
+        }
+
         (k, Command::none())
     }
 
@@ -88,12 +117,28 @@ impl Application for Page {
                 println!("data len {}", data.hall.len());
                 self.hall.data_points.push_slice_overwrite(&data.hall);
             }
+            Msg::G4Setting(set) => {
+                if let Some(ref mut sx) = &mut self.g4_notify {
+                    let g4 = unsafe { G4_CONF.as_mut().unwrap() };
+                    match &set {
+                        Setting::SetViewport(v) => {
+                            g4.sampling_window = g4.duration_to_sample_bytes(*v as u64);
+                            self.hall.data_points = HeapRb::new(g4.sampling_window);
+                        }
+                        _ => g4.push(set.clone()),
+                    };
+                    let _ = sx.try_send(Notify);
+                } else {
+                    unreachable!()
+                }
+            }
             _ => (),
         };
         Command::none()
     }
 
     fn view(&self) -> Element<'_, Self::Message> {
+        let g4 = unsafe { G4_CONF.as_ref().unwrap() };
         container(match self.g4_conn {
             ConnState::Waiting => Element::new(
                 container(
@@ -108,30 +153,39 @@ impl Application for Page {
                 .width(Length::Fill)
                 .height(Length::Fill),
             ),
-            ConnState::Connected | ConnState::Disconnected => widget::row([
-                column!(self.hall.view()).into(),
-                column!(
-                    text("Sampling interval"),
-                    slider(0..=5u32, 0, |t| {
-                        let val = FREQ_PRESETS[t as usize];
-                        Msg::Null
-                    }),
-                    text("Refresh interval"),
-                    slider(0..=12u32, 2, |t| {
-                        let val_us: usize = 2usize.pow(t);
-                        Msg::Null
-                    })
-                )
-                .width(200)
-                .spacing(10)
-                .into(),
-            ])
-            .align_items(iced::Alignment::Center)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .spacing(0)
-            .padding(20)
-            .into(),
+            ConnState::Connected | ConnState::Disconnected => {
+                let sample_int = FREQ_PRESETS.iter().position(|k| *k == g4.sampling_interval);
+
+                widget::row([
+                    column!(self.hall.view()).into(),
+                    column!(
+                        text("Sampling interval"),
+                        slider(0..=4u32, sample_int.unwrap_or(0) as u32, |t| {
+                            let val = FREQ_PRESETS[t as usize];
+                            Msg::G4Setting(Setting::SetSamplingIntv(val))
+                        }),
+                        text("Refresh interval"),
+                        slider(0..=12u32, 0, |t| {
+                            let val_us: u64 = 2usize.pow(t) as u64;
+                            Msg::G4Setting(Setting::SetRefreshIntv(val_us))
+                        }),
+                        text("Viewport"),
+                        slider(7..=18u32, 2, |t| {
+                            let time_in_millisecs: usize = 2usize.pow(t);
+                            Msg::G4Setting(Setting::SetViewport(time_in_millisecs))
+                        })
+                    )
+                    .width(200)
+                    .spacing(10)
+                    .into(),
+                ])
+                .align_items(iced::Alignment::Center)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .spacing(0)
+                .padding(20)
+                .into()
+            }
         })
         .into()
     }
@@ -145,7 +199,6 @@ impl Application for Page {
                 if let Err(er) = (async move {
                     loop {
                         sx.send(Msg::G4Conn(ConnState::Waiting)).await?;
-
                         let try_conn = |mut sx: Sender<Msg>| async move {
                             let ports = serialport::available_ports()?;
                             let mut fv = JoinSet::new();
@@ -200,12 +253,32 @@ impl Application for Page {
 
 async fn handle_g4(portname: String, mut sx: Sender<Msg>) -> anyhow::Result<()> {
     println!("handle g4 {}", portname);
-    let mut dev = tokio_serial::new(portname, 9600).open_native_async()?;
+    let rx = unsafe { G4_RX.as_mut().unwrap() };
+    let mut dev = tokio_serial::new(portname.clone(), 9600).open_native_async()?;
 
-    dev.set_exclusive(true)?;
+    // dev.set_exclusive(true)?;
     use ringbuf::*;
     let mut rbuf: LocalRb<storage::Heap<u8>> = LocalRb::new(BUF_SIZE);
     dev.clear(serialport::ClearBuffer::All)?;
+
+    tokio::spawn(async move {
+        let mut dev = tokio_serial::new(portname, 9600)
+            .open_native_async()
+            .unwrap();
+        println!("serial writer active");
+        while let (Some(_), _) = join!(rx.next(), sleep(Duration::from_millis(500))) {
+            let ve: heapless::Vec<u8, MAX_PACKET_SIZE> =
+                postcard::to_vec_cobs(&G4Command::ConfigState(unsafe {
+                    G4_CONF.as_ref().unwrap().clone()
+                }))
+                .unwrap();
+            let vl = ve.len();
+            println!("send settings update {}", ve.len());
+            let dup: heapless::Vec<u8, MAX_PACKET_SIZE> =
+                ve.into_iter().cycle().take(vl * 2).collect();
+            dev.write(&dup).await.unwrap();
+        }
+    });
 
     loop {
         let mut readbuf = Vec::with_capacity(BUF_SIZE);
@@ -239,9 +312,6 @@ async fn handle_g4(portname: String, mut sx: Sender<Msg>) -> anyhow::Result<()> 
                 }
             }
         }
-
-        // println!("packet fin {}", packet.len());
-
         let des: Result<G4Message, postcard::Error> = postcard::from_bytes_cobs(&mut packet);
         match des {
             Ok(decoded) => {

@@ -4,9 +4,12 @@
 #![feature(iter_next_chunk)]
 #![feature(iter_array_chunks)]
 
-use core::future::{pending, Pending};
+use core::{
+    future::{pending, Pending},
+    ops::Range,
+};
 
-use common::{G4Command, G4Message, HALL_BYTES, MAX_PACKET_SIZE};
+use common::{cob::{self, COBSeek}, G4Command, G4Message, HALL_BYTES, MAX_PACKET_SIZE};
 use defmt::*;
 use embassy_futures::join;
 use embassy_sync::{
@@ -252,31 +255,53 @@ async fn listen<'d, T: 'd + embassy_stm32::usb::Instance>(
             }
         }
     }
+    const BUFLEN: usize = MAX_PACKET_SIZE;
+    let mut buf = [0; BUFLEN];
+    let mut remained = 0;
 
-    let mut remainder: Vec<u8, MAX_PACKET_SIZE> = Vec::new();
     loop {
-        let mut buf: Vec<u8, MAX_PACKET_SIZE>;
-        if remainder.len() > 0 {
-            buf = remainder;
-            remainder = Vec::new();
-        } else {
-            buf = Vec::new();
+        info!("read into {}", (&mut buf[remained..]).len());
+        let rd = rx.read_packet(&mut buf[remained..]).await?;
+        for (r, is_data) in COBSeek::new(&buf.clone()) {
+            if is_data {
+                let dx = postcard::from_bytes_cobs::<G4Command>(&mut buf[r]);
+                
+            }
         }
-        let rd = rx.read_packet(&mut buf).await?;
+
+        debug!("serial read len = {}", rd);
         if rd == 0 {
             Timer::after_secs(2).await;
             continue;
         }
-        let dx = postcard::take_from_bytes_cobs::<G4Command>(&mut buf);
-        match dx {
-            Ok((decoded, r)) => {
-                info!("{:?}", &decoded);
-                remainder.clear();
-                remainder[..r.len()].copy_from_slice(&r);
+        let pos = buf.iter().position(|x| *x == 0);
+        if let Some(zero) = pos {
+            let mut remainder = zero..;
+            let dx = postcard::from_bytes_cobs::<G4Command>(&mut buf[..zero]);
+            let posn = buf[remainder].iter().position(|x| *x != 0);
+            if let Some(nz) = posn {
+                remainder = nz..;
+                let pos = buf[remainder].iter().position(|x| *x == 0);
+                let remainder = if let Some(z) = pos {
+                    nz..z
+                } else {
+                    nz..buf.len()
+                };
+                remained = (&buf[remainder]).len();
+                buf.copy_within(remainder, 0);
+            } else {
+                buf.fill(0);
             }
-            Err(e) => {
-                warn!("{:?}", e);
+            match dx {
+                Ok(decoded) => {
+                    info!("{:?}", &decoded);
+                }
+                Err(e) => {
+                    warn!("{:?}", e);
+                }
             }
+        } else {
+            error!("buffer overflow");
         }
     }
     Ok(())
@@ -297,7 +322,6 @@ async fn report<'d, T: 'd + embassy_stm32::usb::Instance>(
         }
     }
     loop {
-        // let read = class.read_packet(&mut buf).await?;
         let mut hall = Vec::new();
         for _ in 0..HALL_BYTES {
             unwrap!(hall.push(HALL_SPEED.receive().await))
