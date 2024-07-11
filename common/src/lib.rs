@@ -11,12 +11,14 @@ use serde::{self, Deserialize, Serialize};
 pub struct G4Message {
     /// Data from hall effect sensor
     pub hall: Vec<u8, HALL_BYTES>,
+    pub state: Option<G4Settings>
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Format)]
 pub enum G4Command {
     ConfigDelta(Setting),
     ConfigState(G4Settings),
+    CheckState
 }
 
 /// in us

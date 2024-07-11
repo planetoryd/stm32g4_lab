@@ -9,7 +9,7 @@ use core::{
     cmp::min,
     future::{pending, Pending},
     ops::{Range, RangeFrom},
-    sync::atomic,
+    sync::atomic::{self, AtomicBool},
 };
 
 use ::atomic::Atomic;
@@ -74,9 +74,8 @@ static HALL_SPEED: channel::Channel<
     128,
 > = channel::Channel::new();
 
-static HALL_INTERVAL: u64 = 500;
-
 static CONF: Atomic<G4Settings> = Atomic::new(G4Settings::new());
+static CHECK_STATE: AtomicBool = AtomicBool::new(false);
 
 // todo: hall effect sensor speed meter
 // electromagnetic microbalance
@@ -205,7 +204,7 @@ async fn hall_watcher(
     loop {
         let va = adc.blocking_read(&mut opi);
         // let _ = sx.try_send(va);
-        Timer::after_millis(HALL_INTERVAL).await;
+        // Timer::after_millis(HALL_INTERVAL).await;
     }
 }
 
@@ -298,7 +297,13 @@ async fn listen<'d, T: 'd + embassy_stm32::usb::Instance>(
         let cob: COB<G4Command> = COB::new(&mut buf[..], &copy);
         for msg in cob {
             if let Ok(msg) = msg {
-                info!("{:?}", msg);
+                info!("{:?}", &msg);
+                match msg {
+                    G4Command::CheckState => {
+                        CHECK_STATE.store(true, atomic::Ordering::SeqCst);
+                    }
+                    _ => (),
+                }
             } else {
                 match msg.unwrap_err() {
                     NextRead(rg1) => rg = Some(rg1),
@@ -345,9 +350,18 @@ async fn report<'d, T: 'd + embassy_stm32::usb::Instance>(
             } else {
                 hall = None;
             };
-
+            let send_state = CHECK_STATE.fetch_update(
+                atomic::Ordering::SeqCst,
+                atomic::Ordering::SeqCst,
+                |_| Some(false),
+            );
+            let send_state = match send_state {
+                Ok(k) => k,
+                Err(k) => k
+            };
             let reply = G4Message {
                 hall: hall.unwrap_or_default(),
+                state: if send_state { Some(conf) } else { None },
             };
             let rx: Result<heapless::Vec<u8, 1024>, postcard::Error> =
                 postcard::to_vec_cobs(&reply);
