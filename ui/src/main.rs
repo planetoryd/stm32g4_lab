@@ -5,6 +5,7 @@ use std::any::{self, TypeId};
 use std::collections::VecDeque;
 use std::future::pending;
 use std::mem::size_of;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 use std::{default, iter};
@@ -57,6 +58,7 @@ struct Page {
     pub hall: HallChart,
     pub g4_conn: ConnState,
     pub g4_sx: Option<Sender<PushToG4>>,
+    pub stat: Stats,
 }
 
 #[derive(Debug, Clone)]
@@ -65,7 +67,13 @@ enum Msg {
     G4Data(G4Message),
     G4Setting(Setting),
     G4Cmd(G4Command),
+    Stats(Stats),
     Null,
+}
+
+#[derive(Debug, Clone, Default)]
+struct Stats {
+    reports_per_sec: u32,
 }
 
 enum PushToG4 {
@@ -135,6 +143,7 @@ impl Application for Page {
                         v.into_iter()
                     })
                     .flatten();
+                REPORT_COUNTER.fetch_add(1, Ordering::SeqCst);
                 self.hall.data_points.push_iter_overwrite(new);
             }
             Msg::G4Setting(set) => {
@@ -162,6 +171,7 @@ impl Application for Page {
                     unreachable!()
                 }
             }
+            Msg::Stats(stat) => self.stat = stat,
             _ => (),
         };
         Command::none()
@@ -220,7 +230,8 @@ impl Application for Page {
                             let time_in_millisecs: usize = 2usize.pow(t);
                             Msg::G4Setting(Setting::SetViewport(t, time_in_millisecs))
                         }),
-                        controls
+                        controls,
+                        text(format!("reports {}/s", self.stat.reports_per_sec))
                     )
                     .width(200)
                     .spacing(10)
@@ -239,64 +250,81 @@ impl Application for Page {
 
     fn subscription(&self) -> iced::Subscription<Self::Message> {
         struct Host;
-        iced::subscription::channel(
-            TypeId::of::<Host>(),
-            128,
-            |mut sx: Sender<Msg>| async move {
-                if let Err(er) = (async move {
-                    loop {
-                        sx.send(Msg::G4Conn(ConnState::Waiting)).await?;
-                        let try_conn = |mut sx: Sender<Msg>| async move {
-                            let ports = serialport::available_ports()?;
-                            let mut fv = JoinSet::new();
-                            // fv.spawn(async { Ok(()) });
-                            for p in ports {
-                                if let SerialPortType::UsbPort(u) = p.port_type {
-                                    if u.manufacturer.as_ref().unwrap() == "Plein" {
-                                        sx.send(Msg::G4Conn(ConnState::Connected)).await?;
-                                        fv.spawn(handle_g4(p.port_name, sx.clone()));
+        struct Stat;
+        iced::Subscription::batch([
+            iced::subscription::channel(
+                TypeId::of::<Host>(),
+                128,
+                |mut sx: Sender<Msg>| async move {
+                    if let Err(er) = (async move {
+                        loop {
+                            sx.send(Msg::G4Conn(ConnState::Waiting)).await?;
+                            let try_conn = |mut sx: Sender<Msg>| async move {
+                                let ports = serialport::available_ports()?;
+                                let mut fv = JoinSet::new();
+                                // fv.spawn(async { Ok(()) });
+                                for p in ports {
+                                    if let SerialPortType::UsbPort(u) = p.port_type {
+                                        if u.manufacturer.as_ref().unwrap() == "Plein" {
+                                            sx.send(Msg::G4Conn(ConnState::Connected)).await?;
+                                            fv.spawn(handle_g4(p.port_name, sx.clone()));
+                                        }
                                     }
                                 }
-                            }
+
+                                loop {
+                                    if let Some(rx) = fv.join_next().await {
+                                        let k: Result<(), anyhow::Error> = rx?;
+                                        match k {
+                                            Err(e) => {
+                                                println!("G4 handler error {:?}", e);
+                                            }
+                                            _ => {}
+                                        }
+                                    } else {
+                                        break;
+                                    }
+                                }
+
+                                anyhow::Ok(())
+                            };
 
                             loop {
-                                if let Some(rx) = fv.join_next().await {
-                                    let k: Result<(), anyhow::Error> = rx?;
-                                    match k {
-                                        Err(e) => {
-                                            println!("G4 handler error {:?}", e);
-                                        }
-                                        _ => {}
-                                    }
-                                } else {
-                                    break;
-                                }
+                                println!("try conn");
+                                (try_conn)(sx.clone()).await?;
+                                println!("disconnected");
+                                sleep(Duration::from_millis(1000)).await;
                             }
-
-                            anyhow::Ok(())
-                        };
-
-                        loop {
-                            println!("try conn");
-                            (try_conn)(sx.clone()).await?;
-                            println!("disconnected");
-                            sleep(Duration::from_millis(1000)).await;
                         }
+                        #[allow(unreachable_code)]
+                        anyhow::Ok(())
+                    })
+                    .await
+                    {
+                        println!("{:?}", er);
+                        panic!()
+                    } else {
+                        unreachable!()
                     }
-                    #[allow(unreachable_code)]
-                    anyhow::Ok(())
-                })
-                .await
-                {
-                    println!("{:?}", er);
-                    panic!()
-                } else {
-                    unreachable!()
+                },
+            ),
+            iced::subscription::channel(any::TypeId::of::<Stat>(), 10, |mut sx| async move {
+                loop {
+                    let num = REPORT_COUNTER
+                        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |_| Some(0))
+                        .unwrap();
+                    sx.send(Msg::Stats(Stats {
+                        reports_per_sec: num,
+                    }))
+                    .await.unwrap();
+                    sleep(Duration::from_secs(1)).await;
                 }
-            },
-        )
+            }),
+        ])
     }
 }
+
+static REPORT_COUNTER: AtomicU32 = AtomicU32::new(0);
 
 async fn handle_g4(portname: String, mut sx: Sender<Msg>) -> anyhow::Result<()> {
     println!("handle g4 {}", portname);
