@@ -567,6 +567,7 @@ dependencies = [
  "heapless",
  "postcard",
  "serde",
+ "static_assertions",
 ]
 
 [[package]]

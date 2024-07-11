@@ -4,6 +4,7 @@
 #![feature(iter_next_chunk)]
 #![feature(iter_array_chunks)]
 #![allow(unreachable_code)]
+#![allow(unused_mut)]
 
 use core::{
     cmp::min,
@@ -68,11 +69,6 @@ bind_interrupts!(
 );
 
 type HallData = u8;
-static HALL_SPEED: channel::Channel<
-    embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-    HallData,
-    128,
-> = channel::Channel::new();
 
 static CONF: Atomic<G4Settings> = Atomic::new(G4Settings::new());
 static CHECK_STATE: AtomicBool = AtomicBool::new(false);
@@ -200,7 +196,7 @@ async fn hall_watcher(
 ) {
     let mut op1 = OpAmp::new(op1, OpAmpSpeed::Normal);
     let mut opi = op1.buffer_int(&mut pa1, OpAmpGain::Mul1);
-    let (sx, rx) = (HALL_SPEED.sender(), HALL_SPEED.receiver());
+    // let (sx, rx) = (HALL_SPEED.sender(), HALL_SPEED.receiver());
     loop {
         let va = adc.blocking_read(&mut opi);
         // let _ = sx.try_send(va);

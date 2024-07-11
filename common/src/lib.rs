@@ -6,6 +6,7 @@ use bytemuck::NoUninit;
 use defmt::Format;
 use heapless::Vec;
 use serde::{self, Deserialize, Serialize};
+use static_assertions::const_assert;
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone)]
 pub struct G4Message {
@@ -105,11 +106,8 @@ pub const HALL_BYTES: usize = 256;
 pub const MAX_PACKET_SIZE: usize = 4096;
 pub const BUF_SIZE: usize = MAX_PACKET_SIZE * 2;
 
-#[test]
-pub fn constraints() {
-    assert!(size_of::<G4Message>() < MAX_PACKET_SIZE);
-    assert!(size_of::<G4Command>() < MAX_PACKET_SIZE);
-}
+const_assert!(size_of::<G4Message>() < MAX_PACKET_SIZE);
+const_assert!(size_of::<G4Command>() < MAX_PACKET_SIZE);
 
 pub mod cob;
 pub mod num;
