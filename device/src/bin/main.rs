@@ -225,7 +225,7 @@ async fn hall_digital(pa1: PA1, mut prod: Producer<'static, HALL_BUFSIZE>) {
     loop {
         let conf = CONF.load(atomic::Ordering::SeqCst);
         let mut tker = Ticker::every(Duration::from_micros(conf.sampling_interval));
-        if let Ok(mut buf) = prod.grant_exact(256) {
+        if let Ok(mut buf) = prod.grant_exact(1) {
             let mut i = 0;
             select::select(
                 async {
@@ -237,7 +237,7 @@ async fn hall_digital(pa1: PA1, mut prod: Producer<'static, HALL_BUFSIZE>) {
                             tker.next().await;
                         }
                         buf[i] = byte;
-                        i = k;
+                        i = k + 1;
                     }
                 },
                 confn.next(),

@@ -49,14 +49,16 @@ impl Chart<Msg> for MetaChart {
         mut c: plotters::prelude::ChartBuilder<DB>,
     ) {
         use plotters::prelude::*;
+        let iter = self
+            .reports
+            .iter()
+            .enumerate()
+            .map(|(x, y)| (x, y.hall_bytes_len));
         let mut c = c
             .x_label_area_size(20)
             .y_label_area_size(20)
             .margin(10)
-            .build_cartesian_2d(
-                0..self.reports.capacity().into(),
-                0..HALL_BYTES,
-            )
+            .build_cartesian_2d(0..self.reports.capacity().into(), 0..HALL_BYTES)
             .unwrap();
         c.configure_mesh()
             .bold_line_style(style::colors::BLUE.mix(0.2))
@@ -64,15 +66,9 @@ impl Chart<Msg> for MetaChart {
             .draw()
             .unwrap();
         c.draw_series(
-            AreaSeries::new(
-                self.reports
-                    .iter()
-                    .enumerate()
-                    .map(|(x, y)| (x, y.hall_bytes_len)),
-                0,
-                style::colors::BLUE.mix(0.4),
-            )
-            .border_style(ShapeStyle::from(style::colors::BLUE).stroke_width(2)),
+            Histogram::vertical(&c)
+                .data(iter)
+                .style(style::colors::BLUE.mix(0.5).filled()),
         )
         .unwrap();
     }
