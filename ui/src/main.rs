@@ -9,6 +9,7 @@ use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 use std::{default, iter};
 
+use common::num::log2;
 use common::{
     G4Command, G4Message, G4Settings, Setting, SettingState, BUF_SIZE, FREQ_PRESETS,
     MAX_PACKET_SIZE,
@@ -121,7 +122,8 @@ impl Application for Page {
                 if let Some(ref mut sx) = &mut self.g4_notify {
                     let g4 = unsafe { G4_CONF.as_mut().unwrap() };
                     match &set {
-                        Setting::SetViewport(v) => {
+                        Setting::SetViewport(n, v) => {
+                            self.hall.viewport = *n;
                             g4.sampling_window = g4.duration_to_sample_bytes(*v as u64);
                             self.hall.data_points = HeapRb::new(g4.sampling_window);
                         }
@@ -155,24 +157,31 @@ impl Application for Page {
             ),
             ConnState::Connected | ConnState::Disconnected => {
                 let sample_int = FREQ_PRESETS.iter().position(|k| *k == g4.sampling_interval);
-
+                g4.sampling_window;
                 widget::row([
                     column!(self.hall.view()).into(),
                     column!(
-                        text("Sampling interval"),
+                        text(format!("Sampling interval {}us", g4.sampling_interval)),
                         slider(0..=4u32, sample_int.unwrap_or(0) as u32, |t| {
                             let val = FREQ_PRESETS[t as usize];
                             Msg::G4Setting(Setting::SetSamplingIntv(val))
                         }),
-                        text("Refresh interval"),
-                        slider(0..=12u32, 0, |t| {
-                            let val_us: u64 = 2usize.pow(t) as u64;
-                            Msg::G4Setting(Setting::SetRefreshIntv(val_us))
-                        }),
-                        text("Viewport"),
-                        slider(7..=18u32, 2, |t| {
+                        text(format!("Refresh interval {}us", g4.min_report_interval)),
+                        slider(
+                            6..=18u32,
+                            log2(g4.min_report_interval).unwrap_or_default(),
+                            |t| {
+                                let val_us: u64 = 2usize.pow(t) as u64;
+                                Msg::G4Setting(Setting::SetRefreshIntv(val_us))
+                            }
+                        ),
+                        text(format!(
+                            "Viewport {}",
+                            self.hall.data_points.capacity().get() as u64 * 8
+                        )),
+                        slider(7..=18u32, self.hall.viewport, |t| {
                             let time_in_millisecs: usize = 2usize.pow(t);
-                            Msg::G4Setting(Setting::SetViewport(time_in_millisecs))
+                            Msg::G4Setting(Setting::SetViewport(t, time_in_millisecs))
                         })
                     )
                     .width(200)
@@ -265,7 +274,6 @@ async fn handle_g4(portname: String, mut sx: Sender<Msg>) -> anyhow::Result<()> 
         let mut dev = tokio_serial::new(portname, 9600)
             .open_native_async()
             .unwrap();
-        let mut tmp = Vec::with_capacity(256);
         println!("serial writer active");
         while let (Some(_), _) = join!(rx.next(), sleep(Duration::from_millis(500))) {
             let ve: heapless::Vec<u8, MAX_PACKET_SIZE> =
@@ -273,13 +281,8 @@ async fn handle_g4(portname: String, mut sx: Sender<Msg>) -> anyhow::Result<()> 
                     G4_CONF.as_ref().unwrap().clone()
                 }))
                 .unwrap();
-            let vl = ve.len();
-            let (left, right) = ve.split_at(vl / 2);
             println!("send settings update {}", ve.len());
-            dev.write(&tmp).await.unwrap();
-            tmp.clear();
-            dev.write(left).await.unwrap();
-            tmp.extend_from_slice(right);
+            dev.write(&ve).await.unwrap();
         }
     });
 
@@ -334,13 +337,17 @@ async fn handle_g4(portname: String, mut sx: Sender<Msg>) -> anyhow::Result<()> 
 
 struct HallChart {
     data_points: HeapRb<u8>,
+    pub viewport: u32,
 }
 
 impl Default for HallChart {
     fn default() -> Self {
         let mut h = HeapRb::new(100);
         h.push_iter(iter::repeat(0));
-        HallChart { data_points: h }
+        HallChart {
+            data_points: h,
+            viewport: 7,
+        }
     }
 }
 
@@ -365,7 +372,7 @@ impl Chart<Msg> for HallChart {
             .x_label_area_size(20)
             .y_label_area_size(20)
             .margin(20)
-            .build_cartesian_2d(0..self.data_points.occupied_len() * 8, -1..2)
+            .build_cartesian_2d(0..self.data_points.capacity().get() * 8, -1..2)
             .unwrap();
         c.configure_mesh()
             .bold_line_style(style::colors::BLUE.mix(0.2))

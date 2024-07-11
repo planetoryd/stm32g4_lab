@@ -21,7 +21,7 @@ pub enum G4Command {
 /// in us
 pub const FREQ_PRESETS: [u64; 5] = [12, 128, 512, 8192, 32768];
 
-#[derive(Serialize, Deserialize, Default, Debug, Clone, Format)]
+#[derive(Serialize, Deserialize, Debug, Clone, Format)]
 pub struct G4Settings {
     /// in us
     pub sampling_interval: u64,
@@ -29,6 +29,16 @@ pub struct G4Settings {
     pub min_report_interval: u64,
     /// used for ui, num of sample bytes
     pub sampling_window: usize,
+}
+
+impl Default for G4Settings {
+    fn default() -> Self {
+        Self {
+            sampling_interval: 1024,
+            min_report_interval: FREQ_PRESETS[4],
+            sampling_window: 200,
+        }
+    }
 }
 
 impl G4Settings {
@@ -73,7 +83,7 @@ impl SettingState for G4Settings {
 #[derive(Serialize, Deserialize, Debug, Clone, Format)]
 pub enum Setting {
     /// Time in milli secs
-    SetViewport(usize),
+    SetViewport(u32, usize),
     SetRefreshIntv(u64),
     SetSamplingIntv(u64),
 }
@@ -89,3 +99,4 @@ pub fn constraints() {
 }
 
 pub mod cob;
+pub mod num;
