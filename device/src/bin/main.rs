@@ -6,16 +6,16 @@
 
 use core::{
     future::{pending, Pending},
-    ops::{Range, RangeFrom},
+    ops::{Range, RangeFrom}, sync::atomic,
 };
 
+use ::atomic::Atomic;
 use common::{
     cob::{
         self,
         COBErr::{Codec, NextRead},
         COBSeek, COB,
-    },
-    G4Command, G4Message, HALL_BYTES, MAX_PACKET_SIZE,
+    }, G4Command, G4Message, G4Settings, HALL_BYTES, MAX_PACKET_SIZE
 };
 use defmt::*;
 use embassy_futures::join;
@@ -71,6 +71,8 @@ static HALL_SPEED: channel::Channel<
 
 static HALL_INTERVAL: u64 = 500;
 
+static CONF: Atomic<G4Settings> = Atomic::new(G4Settings::new());
+
 // todo: hall effect sensor speed meter
 // electromagnetic microbalance
 
@@ -93,7 +95,7 @@ async fn main(spawner: Spawner) {
 
         // config.enable_ucpd1_dead_battery = true;
     }
-
+    
     let mut p = embassy_stm32::init(config);
 
     // info!("init opmap for hall effect sensor");
@@ -128,7 +130,7 @@ async fn main(spawner: Spawner) {
         &mut control_buf,
     );
 
-    let mut class = embassy_usb::class::cdc_acm::CdcAcmClass::new(&mut builder, &mut state, 64);
+    let class = embassy_usb::class::cdc_acm::CdcAcmClass::new(&mut builder, &mut state, 64);
     let (mut sx, mut rx) = class.split();
     info!("usb max packet size, {}", sx.max_packet_size());
     let mut usb = builder.build();

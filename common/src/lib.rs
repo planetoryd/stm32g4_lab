@@ -2,6 +2,7 @@
 
 use core::mem::size_of;
 
+use bytemuck::NoUninit;
 use defmt::Format;
 use heapless::Vec;
 use serde::{self, Deserialize, Serialize};
@@ -21,18 +22,25 @@ pub enum G4Command {
 /// in us
 pub const FREQ_PRESETS: [u64; 5] = [12, 128, 512, 8192, 32768];
 
-#[derive(Serialize, Deserialize, Debug, Clone, Format)]
+#[derive(Serialize, Deserialize, Debug, Clone, Format, Copy, NoUninit)]
+#[repr(C)]
 pub struct G4Settings {
     /// in us
     pub sampling_interval: u64,
     /// in us
     pub min_report_interval: u64,
     /// used for ui, num of sample bytes
-    pub sampling_window: usize,
+    pub sampling_window: u64,
 }
 
 impl Default for G4Settings {
     fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl G4Settings {
+    pub const fn new() -> Self {
         Self {
             sampling_interval: 1024,
             min_report_interval: FREQ_PRESETS[4],
@@ -45,8 +53,8 @@ impl G4Settings {
     pub fn duration_to_samples(&self, milli: u64) -> u64 {
         milli * 1000 / self.sampling_interval
     }
-    pub fn duration_to_sample_bytes(&self, milli: u64) -> usize {
-        (self.duration_to_samples(milli) / 8) as usize
+    pub fn duration_to_sample_bytes(&self, milli: u64) -> u64 {
+        (self.duration_to_samples(milli) / 8)
     }
 }
 

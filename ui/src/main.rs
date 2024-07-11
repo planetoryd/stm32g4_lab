@@ -125,7 +125,8 @@ impl Application for Page {
                         Setting::SetViewport(n, v) => {
                             self.hall.viewport = *n;
                             g4.sampling_window = g4.duration_to_sample_bytes(*v as u64);
-                            self.hall.data_points = HeapRb::new(g4.sampling_window);
+                            self.hall.data_points =
+                                HeapRb::new(g4.sampling_window.try_into().unwrap());
                         }
                         _ => g4.push(set.clone()),
                     };
