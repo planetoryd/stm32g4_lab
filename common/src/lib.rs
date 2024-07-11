@@ -54,7 +54,10 @@ impl G4Settings {
         milli * 1000 / self.sampling_interval
     }
     pub fn duration_to_sample_bytes(&self, milli: u64) -> u64 {
-        (self.duration_to_samples(milli) / 8)
+        self.duration_to_samples(milli) / 8
+    }
+    pub fn hall_commit_interval(&self) -> u64 {
+        self.min_report_interval / self.sampling_interval
     }
 }
 

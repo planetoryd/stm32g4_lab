@@ -3,19 +3,24 @@
 #![feature(impl_trait_in_assoc_type)]
 #![feature(iter_next_chunk)]
 #![feature(iter_array_chunks)]
+#![allow(unreachable_code)]
 
 use core::{
+    cmp::min,
     future::{pending, Pending},
-    ops::{Range, RangeFrom}, sync::atomic,
+    ops::{Range, RangeFrom},
+    sync::atomic,
 };
 
 use ::atomic::Atomic;
+use bbqueue::{BBBuffer, Consumer, Producer};
 use common::{
     cob::{
         self,
         COBErr::{Codec, NextRead},
         COBSeek, COB,
-    }, G4Command, G4Message, G4Settings, HALL_BYTES, MAX_PACKET_SIZE
+    },
+    G4Command, G4Message, G4Settings, HALL_BYTES, MAX_PACKET_SIZE,
 };
 use defmt::*;
 use embassy_futures::join;
@@ -95,7 +100,7 @@ async fn main(spawner: Spawner) {
 
         // config.enable_ucpd1_dead_battery = true;
     }
-    
+
     let mut p = embassy_stm32::init(config);
 
     // info!("init opmap for hall effect sensor");
@@ -108,7 +113,7 @@ async fn main(spawner: Spawner) {
     let driver = Driver::new(p.USB, Irqs, p.PA12, p.PA11);
     let mut config = embassy_usb::Config::new(0xc0de, 0xcafe);
     config.manufacturer = Some("Plein");
-    config.product = Some("Lab device G4");
+    config.product = Some("HALL_BUFSIZE device G4");
     config.serial_number = Some("1");
     config.device_class = 0xEF;
     config.device_sub_class = 0x02;
@@ -136,6 +141,8 @@ async fn main(spawner: Spawner) {
     let mut usb = builder.build();
     let usb_fut = usb.run();
 
+    let (prod, mut cons) = HALL_DATA.try_split().unwrap();
+
     let report_fut = async {
         let sig = unsafe { USB_SIGNAL.publisher() }.unwrap();
         loop {
@@ -146,7 +153,7 @@ async fn main(spawner: Spawner) {
                 sig.publish(USB_STATE).await;
             }
             info!("Connected");
-            let x = join::join(report(&mut sx), listen(&mut rx)).await;
+            let x = join::join(report(&mut sx, &mut cons), listen(&mut rx)).await;
             info!("Disconnected, {:?}", x);
             unsafe {
                 USB_STATE = UsbState::Waiting;
@@ -155,7 +162,7 @@ async fn main(spawner: Spawner) {
         }
     };
 
-    unwrap!(spawner.spawn(hall_digital(p.PA1)));
+    unwrap!(spawner.spawn(hall_digital(p.PA1, prod)));
     // spawner
     //     .spawn(hall_watcher(adc, p.OPAMP1, p.PA1, vrefint, temp))
     //     .unwrap();
@@ -203,8 +210,7 @@ async fn hall_watcher(
 }
 
 #[embassy_executor::task]
-async fn hall_digital(pa1: PA1) {
-    const MICROS: usize = 2000;
+async fn hall_digital(pa1: PA1, mut prod: Producer<'static, HALL_BUFSIZE>) {
     let p = gpio::Input::new(pa1, Pull::Up);
     unsafe {
         let mut usb = USB_SIGNAL.subscriber().unwrap();
@@ -216,15 +222,24 @@ async fn hall_digital(pa1: PA1) {
             }
         }
     }
-    info!("hall sensor, sample interval={}us", MICROS);
     loop {
-        let mut byte = 0u8;
-        for pos in 0..8 {
-            Timer::after_micros(MICROS as u64).await;
-            let le = p.is_high() as u8;
-            byte |= le << pos;
+        let conf = CONF.load(atomic::Ordering::SeqCst);
+        let intv = conf.hall_commit_interval();
+        if let Ok(mut buf) = prod.grant_exact(intv as usize) {
+            for i in 0..buf.len() {
+                let mut byte = 0u8;
+                for pos in 0..8 {
+                    Timer::after_micros(conf.sampling_interval).await;
+                    let le = p.is_high() as u8;
+                    byte |= le << pos;
+                }
+                buf[i] = byte;
+            }
+            let le = buf.len();
+            buf.commit(le);
+        } else {
+            Timer::after_millis(500).await;
         }
-        let _ = HALL_SPEED.sender().try_send(byte);
     }
 }
 
@@ -269,7 +284,10 @@ async fn listen<'d, T: 'd + embassy_stm32::usb::Instance>(
     let mut rg: Option<RangeFrom<usize>> = None;
     loop {
         rg.get_or_insert(0..);
-        info!("read into {}", (&mut buf[rg.as_ref().unwrap().clone()]).len());
+        info!(
+            "read into {}",
+            (&mut buf[rg.as_ref().unwrap().clone()]).len()
+        );
         let rd = rx.read_packet(&mut buf[rg.take().unwrap()]).await?;
         debug!("serial read len = {}", rd);
         if rd == 0 {
@@ -294,8 +312,12 @@ async fn listen<'d, T: 'd + embassy_stm32::usb::Instance>(
     Ok(())
 }
 
+const HALL_BUFSIZE: usize = 1024 * 8;
+static HALL_DATA: BBBuffer<HALL_BUFSIZE> = BBBuffer::new();
+
 async fn report<'d, T: 'd + embassy_stm32::usb::Instance>(
     class: &mut cdc_acm::Sender<'d, Driver<'d, T>>,
+    hall_con: &mut Consumer<'static, HALL_BUFSIZE>,
 ) -> Result<(), Disconnected> {
     info!("reporting enabled");
     unsafe {
@@ -308,24 +330,39 @@ async fn report<'d, T: 'd + embassy_stm32::usb::Instance>(
             }
         }
     }
+
     loop {
-        let mut hall = Vec::new();
-        for _ in 0..HALL_BYTES {
-            unwrap!(hall.push(HALL_SPEED.receive().await))
-        }
-        let reply = G4Message { hall };
-        let rx: Result<heapless::Vec<u8, 1024>, postcard::Error> = postcard::to_vec_cobs(&reply);
-        if let Ok(coded) = rx {
-            debug!("send upstream {}", coded.len());
-            let mut chunks = coded.into_iter().array_chunks::<64>();
-            while let Some(p) = chunks.next() {
-                class.write_packet(&p).await?;
+        let conf = CONF.load(atomic::Ordering::SeqCst);
+        let interval = Duration::from_micros(conf.min_report_interval);
+        let cycles = Duration::from_millis(500).as_ticks() / interval.as_ticks();
+        info!("report, with interval {}us", conf.min_report_interval);
+        for _ix in 0..cycles {
+            let hall: Option<Vec<u8, HALL_BYTES>>;
+            if let Ok(rd) = hall_con.read() {
+                let copy = &rd[..min(rd.len(), HALL_BYTES)];
+                hall = Some(heapless::Vec::from_slice(copy).unwrap());
+                rd.release(hall.as_ref().unwrap().len());
+            } else {
+                hall = None;
+            };
+
+            let reply = G4Message {
+                hall: hall.unwrap_or_default(),
+            };
+            let rx: Result<heapless::Vec<u8, 1024>, postcard::Error> =
+                postcard::to_vec_cobs(&reply);
+            if let Ok(coded) = rx {
+                let mut chunks = coded.into_iter().array_chunks::<64>();
+                while let Some(p) = chunks.next() {
+                    class.write_packet(&p).await?;
+                }
+                if let Some(p) = chunks.into_remainder() {
+                    class.write_packet(p.as_slice()).await?;
+                }
+            } else {
+                error!("{:?}", rx.unwrap_err())
             }
-            if let Some(p) = chunks.into_remainder() {
-                class.write_packet(p.as_slice()).await?;
-            }
-        } else {
-            error!("{:?}", rx.unwrap_err())
+            Timer::after(interval).await;
         }
     }
     Ok(())
