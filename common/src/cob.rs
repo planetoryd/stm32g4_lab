@@ -1,6 +1,10 @@
-use core::{iter::Peekable, marker::PhantomData, ops::Range};
-use std::io::Read;
+use core::{
+    iter::Peekable,
+    marker::PhantomData,
+    ops::{Range, RangeFrom},
+};
 
+use defmt::Format;
 use serde::{de::DeserializeOwned, Deserialize};
 
 use crate::{G4Command, G4Message};
@@ -44,8 +48,20 @@ impl<'s, T> COB<'s, T> {
     }
 }
 
+#[derive(Format, Debug)]
+pub enum COBErr {
+    Codec(postcard::Error),
+    NextRead(RangeFrom<usize>),
+}
+
+impl From<postcard::Error> for COBErr {
+    fn from(value: postcard::Error) -> Self {
+        COBErr::Codec(value)
+    }
+}
+
 impl<'s, T: DeserializeOwned> Iterator for COB<'s, T> {
-    type Item = Result<T, postcard::Error>;
+    type Item = Result<T, COBErr>;
     fn next(&mut self) -> Option<Self::Item> {
         let mut now: Option<Range<usize>> = self.3.take();
         let next: &mut Option<Range<usize>> = &mut self.3;
@@ -67,13 +83,13 @@ impl<'s, T: DeserializeOwned> Iterator for COB<'s, T> {
                 if de.is_err() {
                     self.2[..range.len()].copy_from_slice(&self.0.slice[range.clone()]);
                     self.2[range.len()..].fill(0);
-                    None
+                    Some(Err(COBErr::NextRead(range.len()..)))
                 } else {
                     self.2.fill(0);
-                    Some(de)
+                    Some(de.map_err(|k| k.into()))
                 }
             } else {
-                Some(de)
+                Some(de.map_err(|k| k.into()))
             }
         } else {
             None

@@ -265,6 +265,7 @@ async fn handle_g4(portname: String, mut sx: Sender<Msg>) -> anyhow::Result<()> 
         let mut dev = tokio_serial::new(portname, 9600)
             .open_native_async()
             .unwrap();
+        let mut tmp = Vec::with_capacity(256);
         println!("serial writer active");
         while let (Some(_), _) = join!(rx.next(), sleep(Duration::from_millis(500))) {
             let ve: heapless::Vec<u8, MAX_PACKET_SIZE> =
@@ -273,10 +274,12 @@ async fn handle_g4(portname: String, mut sx: Sender<Msg>) -> anyhow::Result<()> 
                 }))
                 .unwrap();
             let vl = ve.len();
+            let (left, right) = ve.split_at(vl / 2);
             println!("send settings update {}", ve.len());
-            let dup: heapless::Vec<u8, MAX_PACKET_SIZE> =
-                ve.into_iter().cycle().take(vl * 2).collect();
-            dev.write(&dup).await.unwrap();
+            dev.write(&tmp).await.unwrap();
+            tmp.clear();
+            dev.write(left).await.unwrap();
+            tmp.extend_from_slice(right);
         }
     });
 

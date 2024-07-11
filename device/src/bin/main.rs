@@ -6,10 +6,17 @@
 
 use core::{
     future::{pending, Pending},
-    ops::Range,
+    ops::{Range, RangeFrom},
 };
 
-use common::{cob::{self, COBSeek}, G4Command, G4Message, HALL_BYTES, MAX_PACKET_SIZE};
+use common::{
+    cob::{
+        self,
+        COBErr::{Codec, NextRead},
+        COBSeek, COB,
+    },
+    G4Command, G4Message, HALL_BYTES, MAX_PACKET_SIZE,
+};
 use defmt::*;
 use embassy_futures::join;
 use embassy_sync::{
@@ -257,51 +264,29 @@ async fn listen<'d, T: 'd + embassy_stm32::usb::Instance>(
     }
     const BUFLEN: usize = MAX_PACKET_SIZE;
     let mut buf = [0; BUFLEN];
-    let mut remained = 0;
-
+    let mut rg: Option<RangeFrom<usize>> = None;
     loop {
-        info!("read into {}", (&mut buf[remained..]).len());
-        let rd = rx.read_packet(&mut buf[remained..]).await?;
-        for (r, is_data) in COBSeek::new(&buf.clone()) {
-            if is_data {
-                let dx = postcard::from_bytes_cobs::<G4Command>(&mut buf[r]);
-                
-            }
-        }
-
+        rg.get_or_insert(0..);
+        info!("read into {}", (&mut buf[rg.as_ref().unwrap().clone()]).len());
+        let rd = rx.read_packet(&mut buf[rg.take().unwrap()]).await?;
         debug!("serial read len = {}", rd);
         if rd == 0 {
             Timer::after_secs(2).await;
             continue;
         }
-        let pos = buf.iter().position(|x| *x == 0);
-        if let Some(zero) = pos {
-            let mut remainder = zero..;
-            let dx = postcard::from_bytes_cobs::<G4Command>(&mut buf[..zero]);
-            let posn = buf[remainder].iter().position(|x| *x != 0);
-            if let Some(nz) = posn {
-                remainder = nz..;
-                let pos = buf[remainder].iter().position(|x| *x == 0);
-                let remainder = if let Some(z) = pos {
-                    nz..z
-                } else {
-                    nz..buf.len()
-                };
-                remained = (&buf[remainder]).len();
-                buf.copy_within(remainder, 0);
+        let copy = buf.clone();
+        let cob: COB<G4Command> = COB::new(&mut buf[..], &copy);
+        for msg in cob {
+            if let Ok(msg) = msg {
+                info!("{:?}", msg);
             } else {
-                buf.fill(0);
-            }
-            match dx {
-                Ok(decoded) => {
-                    info!("{:?}", &decoded);
-                }
-                Err(e) => {
-                    warn!("{:?}", e);
+                match msg.unwrap_err() {
+                    NextRead(rg1) => rg = Some(rg1),
+                    Codec(er) => {
+                        warn!("malformed packet {:?}", er);
+                    }
                 }
             }
-        } else {
-            error!("buffer overflow");
         }
     }
     Ok(())
