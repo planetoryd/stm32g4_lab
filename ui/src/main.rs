@@ -23,7 +23,7 @@ use iced::widget::{self, button, column, container, row, slider, text, Column, C
 use iced::{executor, Length, Padding};
 use iced::{Application, Command, Element, Settings, Theme};
 use iced_aw::{spinner, Spinner};
-use meta::MetaChart;
+use meta::{MetaChart, ReportStat};
 use plotters::style;
 use plotters_iced::{Chart, ChartWidget};
 use ringbuf::traits::{Consumer, Observer, Producer, RingBuffer};
@@ -148,8 +148,10 @@ impl Application for Page {
                         v.into_iter()
                     })
                     .flatten();
+                let stat = ReportStat::from_msg(&data);
                 REPORT_COUNTER.fetch_add(1, Ordering::SeqCst);
                 self.hall.data_points.push_iter_overwrite(new);
+                self.meta.reports.push_overwrite(stat);
             }
             Msg::G4Setting(set) => {
                 if let Some(ref mut sx) = &mut self.g4_sx {

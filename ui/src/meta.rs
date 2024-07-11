@@ -1,3 +1,4 @@
+use common::{G4Message, HALL_BYTES};
 use iced::Element;
 use plotters::style;
 use plotters_iced::{Chart, ChartWidget};
@@ -11,19 +12,27 @@ use crate::Msg;
 /// stats about the itself
 
 pub struct MetaChart {
-    reports: HeapRb<ReportStat>,
+    pub reports: HeapRb<ReportStat>,
 }
 
 impl Default for MetaChart {
     fn default() -> Self {
         Self {
-            reports: HeapRb::new(100),
+            reports: HeapRb::new(500),
         }
     }
 }
 
 pub struct ReportStat {
     hall_bytes_len: usize,
+}
+
+impl ReportStat {
+    pub fn from_msg(g4: &G4Message) -> Self {
+        Self {
+            hall_bytes_len: g4.hall.len(),
+        }
+    }
 }
 
 impl MetaChart {
@@ -40,14 +49,13 @@ impl Chart<Msg> for MetaChart {
         mut c: plotters::prelude::ChartBuilder<DB>,
     ) {
         use plotters::prelude::*;
-        let ymax = self.reports.iter().max_by_key(|x| x.hall_bytes_len);
         let mut c = c
             .x_label_area_size(20)
             .y_label_area_size(20)
             .margin(10)
             .build_cartesian_2d(
                 0..self.reports.capacity().into(),
-                0..ymax.map_or(16, |k| k.hall_bytes_len),
+                0..HALL_BYTES,
             )
             .unwrap();
         c.configure_mesh()
