@@ -23,6 +23,7 @@ use iced::widget::{self, button, column, container, row, slider, text, Column, C
 use iced::{executor, Length, Padding};
 use iced::{Application, Command, Element, Settings, Theme};
 use iced_aw::{spinner, Spinner};
+use meta::MetaChart;
 use plotters::style;
 use plotters_iced::{Chart, ChartWidget};
 use ringbuf::traits::{Consumer, Observer, Producer, RingBuffer};
@@ -40,6 +41,8 @@ use tokio_serial::SerialPortBuilderExt;
 // heater temp plot
 // dac output voltage plot
 
+mod meta;
+
 macro forever() {
     pending::<()>()
 }
@@ -56,6 +59,7 @@ pub fn main() -> iced::Result {
 #[derive(Default)]
 struct Page {
     pub hall: HallChart,
+    pub meta: MetaChart,
     pub g4_conn: ConnState,
     pub g4_sx: Option<Sender<PushToG4>>,
     pub stat: Stats,
@@ -74,6 +78,7 @@ enum Msg {
 #[derive(Debug, Clone, Default)]
 struct Stats {
     reports_per_sec: u32,
+    frame_per_sec: u32,
 }
 
 enum PushToG4 {
@@ -201,7 +206,7 @@ impl Application for Page {
                     .padding(Padding {
                         top: 10.,
                         bottom: 0.,
-                        left: 0.,
+                        left: 10.,
                         right: 0.,
                     })
                     .center_x()
@@ -209,14 +214,14 @@ impl Application for Page {
                 let sample_int = FREQ_PRESETS.iter().position(|k| *k == g4.sampling_interval);
                 g4.sampling_window;
                 widget::row([
-                    column!(self.hall.view()).into(),
+                    column!(self.hall.view(), self.meta.view()).into(),
                     column!(
-                        text(format!("Sampling interval {}us", g4.sampling_interval)),
+                        text(format!("Sample per {}us", g4.sampling_interval)),
                         slider(0..=4u32, sample_int.unwrap_or(0) as u32, |t| {
                             let val = FREQ_PRESETS[t as usize];
                             Msg::G4Setting(Setting::SetSamplingIntv(val))
                         }),
-                        text(format!("Refresh interval {}us", g4.min_report_interval)),
+                        text(format!("Refresh per {}us", g4.min_report_interval)),
                         slider(
                             6..=18u32,
                             log2(g4.min_report_interval).unwrap_or_default(),
@@ -231,10 +236,14 @@ impl Application for Page {
                             Msg::G4Setting(Setting::SetViewport(t, time_in_millisecs))
                         }),
                         controls,
-                        text(format!("reports {}/s", self.stat.reports_per_sec))
+                        text(format!(
+                            "reports {}/s \nframe {}/s",
+                            self.stat.reports_per_sec, self.stat.frame_per_sec
+                        ))
                     )
                     .width(200)
                     .spacing(10)
+                    .padding(10)
                     .into(),
                 ])
                 .align_items(iced::Alignment::Center)
@@ -310,13 +319,16 @@ impl Application for Page {
             ),
             iced::subscription::channel(any::TypeId::of::<Stat>(), 10, |mut sx| async move {
                 loop {
-                    let num = REPORT_COUNTER
-                        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |_| Some(0))
-                        .unwrap();
                     sx.send(Msg::Stats(Stats {
-                        reports_per_sec: num,
+                        reports_per_sec: REPORT_COUNTER
+                            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |_| Some(0))
+                            .unwrap(),
+                        frame_per_sec: DRAW_COUNTER
+                            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |_| Some(0))
+                            .unwrap(),
                     }))
-                    .await.unwrap();
+                    .await
+                    .unwrap();
                     sleep(Duration::from_secs(1)).await;
                 }
             }),
@@ -325,6 +337,7 @@ impl Application for Page {
 }
 
 static REPORT_COUNTER: AtomicU32 = AtomicU32::new(0);
+static DRAW_COUNTER: AtomicU32 = AtomicU32::new(0);
 
 async fn handle_g4(portname: String, mut sx: Sender<Msg>) -> anyhow::Result<()> {
     println!("handle g4 {}", portname);
@@ -430,7 +443,6 @@ impl HallChart {
     fn view(&self) -> Element<Msg> {
         column!(ChartWidget::new(self), text("hall"))
             .align_items(iced::Alignment::Center)
-            .padding(20)
             .into()
     }
 }
@@ -442,11 +454,12 @@ impl Chart<Msg> for HallChart {
         state: &Self::State,
         mut c: plotters::prelude::ChartBuilder<DB>,
     ) {
+        DRAW_COUNTER.fetch_add(1, Ordering::SeqCst);
         use plotters::prelude::*;
         let mut c = c
             .x_label_area_size(20)
             .y_label_area_size(20)
-            .margin(20)
+            .margin(10)
             .build_cartesian_2d(0..self.viewport_points as usize, -1..2)
             .unwrap();
         c.configure_mesh()
