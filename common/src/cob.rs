@@ -83,7 +83,7 @@ impl<'s, T: DeserializeOwned> Iterator for COB<'s, T> {
                 if de.is_err() {
                     self.2[..range.len()].copy_from_slice(&self.0.slice[range.clone()]);
                     self.2[range.len()..].fill(0);
-                    Some(Err(COBErr::NextRead(range.len()..)))
+                    Some(Err(COBErr::NextRead(range.len() + 1..)))
                 } else {
                     self.2.fill(0);
                     Some(de.map_err(|k| k.into()))
@@ -144,12 +144,12 @@ impl<'s> Iterator for COBSeek<'s> {
 
 #[test]
 fn postcard_gen() {
-    let m = G4Command::ConfigState(Default::default());
+    let m = G4Command::CheckState;
     let mut v = [0u8; 16];
     postcard::to_slice_cobs(&m, &mut v[..]).unwrap();
     let mut v2: Vec<_> = v.clone().into_iter().cycle().take(32).collect();
     let mut v3: Vec<_> = v.clone().into_iter().cycle().take(34).collect();
-
+    let mut v4 = Vec::from_iter([1,2,0].into_iter().chain(v3));
     fn test(v: &mut [u8]) {
         dbg!(&v);
         let copy = Vec::from(&*v);
@@ -158,5 +158,5 @@ fn postcard_gen() {
         dbg!(v);
     }
 
-    test(&mut v2);
+    test(&mut v4);
 }

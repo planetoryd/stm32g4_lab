@@ -120,6 +120,7 @@ async fn handle_g4(portname: String) -> Result<()> {
 fn test_cobs() {
     let msg = G4Message {
         hall: Default::default(),
+        ..Default::default()
     };
     let mut vec = [0; 1024];
     let mut coded = postcard::to_slice_cobs(&msg, &mut vec).unwrap();

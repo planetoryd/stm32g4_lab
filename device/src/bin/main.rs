@@ -277,14 +277,14 @@ async fn listen<'d, T: 'd + embassy_stm32::usb::Instance>(
     const BUFLEN: usize = MAX_PACKET_SIZE;
     let mut buf = [0; BUFLEN];
     let mut rg: Option<RangeFrom<usize>> = None;
+    
     loop {
         rg.get_or_insert(0..);
-        info!(
-            "read into {}",
-            (&mut buf[rg.as_ref().unwrap().clone()]).len()
-        );
+        // info!(
+        //     "read into {}",
+        //     (&mut buf[rg.as_ref().unwrap().clone()]).len()
+        // );
         let rd = rx.read_packet(&mut buf[rg.take().unwrap()]).await?;
-        debug!("serial read len = {}", rd);
         if rd == 0 {
             Timer::after_secs(2).await;
             continue;
@@ -336,7 +336,7 @@ async fn report<'d, T: 'd + embassy_stm32::usb::Instance>(
         let conf = CONF.load(atomic::Ordering::SeqCst);
         let interval = Duration::from_micros(conf.min_report_interval);
         let cycles = Duration::from_millis(500).as_ticks() / interval.as_ticks();
-        info!("report, with interval {}us", conf.min_report_interval);
+        // info!("report, with interval {}us", conf.min_report_interval);
         for _ix in 0..cycles {
             let hall: Option<Vec<u8, HALL_BYTES>>;
             if let Ok(rd) = hall_con.read() {

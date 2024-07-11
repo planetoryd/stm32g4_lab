@@ -18,8 +18,8 @@ use futures::channel::mpsc::{self, Receiver, Sender};
 use futures::lock::Mutex;
 use futures::{join, SinkExt, StreamExt};
 use iced::alignment::{Horizontal, Vertical};
-use iced::widget::{self, column, container, row, slider, text, Column, Container, Row};
-use iced::{executor, Length};
+use iced::widget::{self, button, column, container, row, slider, text, Column, Container, Row};
+use iced::{executor, Length, Padding};
 use iced::{Application, Command, Element, Settings, Theme};
 use iced_aw::{spinner, Spinner};
 use plotters::style;
@@ -56,7 +56,7 @@ pub fn main() -> iced::Result {
 struct Page {
     pub hall: HallChart,
     pub g4_conn: ConnState,
-    pub g4_notify: Option<Sender<Notify>>,
+    pub g4_sx: Option<Sender<PushToG4>>,
 }
 
 #[derive(Debug, Clone)]
@@ -64,12 +64,16 @@ enum Msg {
     G4Conn(ConnState),
     G4Data(G4Message),
     G4Setting(Setting),
+    G4Cmd(G4Command),
     Null,
 }
 
-struct Notify;
+enum PushToG4 {
+    Notify,
+    CMD(G4Command),
+}
 
-static mut G4_RX: Option<Receiver<Notify>> = None;
+static mut G4_RX: Option<Receiver<PushToG4>> = None;
 static mut G4_CONF: Option<G4Settings> = None;
 
 #[derive(Debug, Default, Clone)]
@@ -98,7 +102,7 @@ impl Application for Page {
     fn new(_flags: ()) -> (Page, Command<Self::Message>) {
         let mut k = Page::default();
         let (s, r) = mpsc::channel(1);
-        k.g4_notify = Some(s);
+        k.g4_sx = Some(s);
         unsafe {
             G4_RX = Some(r);
             G4_CONF = Some(Default::default());
@@ -115,11 +119,13 @@ impl Application for Page {
         match msg {
             Msg::G4Conn(conn) => self.g4_conn = conn,
             Msg::G4Data(data) => {
-                println!("data len {}", data.hall.len());
+                if let Some(sett) = data.state {
+                    println!("{:?}", sett);
+                }
                 self.hall.data_points.push_slice_overwrite(&data.hall);
             }
             Msg::G4Setting(set) => {
-                if let Some(ref mut sx) = &mut self.g4_notify {
+                if let Some(ref mut sx) = &mut self.g4_sx {
                     let g4 = unsafe { G4_CONF.as_mut().unwrap() };
                     match &set {
                         Setting::SetViewport(n, v) => {
@@ -130,7 +136,14 @@ impl Application for Page {
                         }
                         _ => g4.push(set.clone()),
                     };
-                    let _ = sx.try_send(Notify);
+                    let _ = sx.try_send(PushToG4::Notify);
+                } else {
+                    unreachable!()
+                }
+            }
+            Msg::G4Cmd(cmd) => {
+                if let Some(ref mut sx) = &mut self.g4_sx {
+                    let _ = sx.try_send(PushToG4::CMD(cmd));
                 } else {
                     unreachable!()
                 }
@@ -157,6 +170,18 @@ impl Application for Page {
                 .height(Length::Fill),
             ),
             ConnState::Connected | ConnState::Disconnected => {
+                let btn_state = button("get state")
+                    .padding(10)
+                    .on_press(Msg::G4Cmd(G4Command::CheckState));
+                let controls = container(btn_state)
+                    .padding(Padding {
+                        top: 10.,
+                        bottom: 0.,
+                        left: 0.,
+                        right: 0.,
+                    })
+                    .center_x()
+                    .center_y();
                 let sample_int = FREQ_PRESETS.iter().position(|k| *k == g4.sampling_interval);
                 g4.sampling_window;
                 widget::row([
@@ -183,7 +208,8 @@ impl Application for Page {
                         slider(7..=18u32, self.hall.viewport, |t| {
                             let time_in_millisecs: usize = 2usize.pow(t);
                             Msg::G4Setting(Setting::SetViewport(t, time_in_millisecs))
-                        })
+                        }),
+                        controls
                     )
                     .width(200)
                     .spacing(10)
@@ -276,14 +302,17 @@ async fn handle_g4(portname: String, mut sx: Sender<Msg>) -> anyhow::Result<()> 
             .open_native_async()
             .unwrap();
         println!("serial writer active");
-        while let (Some(_), _) = join!(rx.next(), sleep(Duration::from_millis(500))) {
-            let ve: heapless::Vec<u8, MAX_PACKET_SIZE> =
-                postcard::to_vec_cobs(&G4Command::ConfigState(unsafe {
-                    G4_CONF.as_ref().unwrap().clone()
-                }))
-                .unwrap();
-            println!("send settings update {}", ve.len());
-            dev.write(&ve).await.unwrap();
+        while let (Some(rxd), _) = join!(rx.next(), sleep(Duration::from_millis(500))) {
+            let pakt = match rxd {
+                PushToG4::CMD(cmd) => cmd,
+                PushToG4::Notify => {
+                    G4Command::ConfigState(unsafe { G4_CONF.as_ref().unwrap().clone() })
+                }
+            };
+            println!("send {:?}", &pakt);
+            let en: heapless::Vec<u8, MAX_PACKET_SIZE> = postcard::to_vec_cobs(&pakt).unwrap();
+            AsyncWriteExt::write(&mut dev, &en).await.unwrap();
+            dev.flush().await.unwrap();
         }
     });
 
@@ -322,10 +351,8 @@ async fn handle_g4(portname: String, mut sx: Sender<Msg>) -> anyhow::Result<()> 
         let des: Result<G4Message, postcard::Error> = postcard::from_bytes_cobs(&mut packet);
         match des {
             Ok(decoded) => {
-                println!("send {}", decoded.hall.len());
                 let s = Msg::G4Data(decoded);
                 sx.send(s).await?;
-                println!("sent");
             }
             Err(er) => {
                 println!("read err, {:?}", er);
