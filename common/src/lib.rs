@@ -23,7 +23,7 @@ pub enum G4Command {
 }
 
 /// in us
-pub const FREQ_PRESETS: [u64; 5] = [12, 128, 512, 8192, 32768];
+pub const FREQ_PRESETS: [u64; 5] = [128, 1024, 2048, 8192, 32768];
 
 #[derive(Serialize, Deserialize, Debug, Clone, Format, Copy, NoUninit)]
 #[repr(C)]
@@ -58,9 +58,6 @@ impl G4Settings {
     }
     pub fn duration_to_sample_bytes(&self, milli: u64) -> u64 {
         self.duration_to_samples(milli) / 8
-    }
-    pub fn hall_commit_interval(&self) -> u64 {
-        self.min_report_interval / self.sampling_interval
     }
 }
 

@@ -7,7 +7,7 @@
 #![allow(unused_mut)]
 
 use core::{
-    cmp::min,
+    cmp::{max, min},
     future::{pending, Pending},
     ops::{Range, RangeFrom},
     sync::atomic::{self, AtomicBool},
@@ -24,7 +24,10 @@ use common::{
     G4Command, G4Message, G4Settings, HALL_BYTES, MAX_PACKET_SIZE,
 };
 use defmt::*;
-use embassy_futures::join;
+use embassy_futures::{
+    join,
+    select::{self, Either},
+};
 use embassy_sync::{
     blocking_mutex::{raw::CriticalSectionRawMutex, CriticalSectionMutex},
     channel,
@@ -37,7 +40,7 @@ use embassy_usb::{
     UsbDevice,
 };
 
-use futures_util::Stream;
+use futures_util::{Stream, StreamExt};
 use heapless::Vec;
 #[cfg(not(feature = "defmt"))]
 use panic_halt as _;
@@ -60,7 +63,7 @@ use embassy_stm32::{
     Config,
 };
 use embassy_stm32::{peripherals, usb};
-use embassy_time::{Delay, Duration, Timer};
+use embassy_time::{Delay, Duration, Instant, Ticker, Timer};
 
 bind_interrupts!(
     struct Irqs {
@@ -71,6 +74,7 @@ bind_interrupts!(
 type HallData = u8;
 
 static CONF: Atomic<G4Settings> = Atomic::new(G4Settings::new());
+static CONF_NOTIF: PubSubChannel<CriticalSectionRawMutex, (), 4, 2, 1> = PubSubChannel::new();
 static CHECK_STATE: AtomicBool = AtomicBool::new(false);
 
 // todo: hall effect sensor speed meter
@@ -217,23 +221,31 @@ async fn hall_digital(pa1: PA1, mut prod: Producer<'static, HALL_BUFSIZE>) {
             }
         }
     }
+    let mut confn = CONF_NOTIF.subscriber().unwrap();
     loop {
         let conf = CONF.load(atomic::Ordering::SeqCst);
-        let intv = conf.hall_commit_interval();
-        if let Ok(mut buf) = prod.grant_exact(intv as usize) {
-            for i in 0..buf.len() {
-                let mut byte = 0u8;
-                for pos in 0..8 {
-                    Timer::after_micros(conf.sampling_interval).await;
-                    let le = p.is_high() as u8;
-                    byte |= le << pos;
-                }
-                buf[i] = byte;
-            }
-            let le = buf.len();
-            buf.commit(le);
+        let mut tker = Ticker::every(Duration::from_micros(conf.sampling_interval));
+        if let Ok(mut buf) = prod.grant_exact(256) {
+            let mut i = 0;
+            select::select(
+                async {
+                    for k in 0..buf.len() {
+                        let mut byte = 0u8;
+                        for pos in 0..8 {
+                            let le = p.is_high() as u8;
+                            byte |= le << pos;
+                            tker.next().await;
+                        }
+                        buf[i] = byte;
+                        i = k;
+                    }
+                },
+                confn.next(),
+            )
+            .await;
+            buf.commit(i);
         } else {
-            Timer::after_millis(500).await;
+            break;
         }
     }
 }
@@ -277,7 +289,7 @@ async fn listen<'d, T: 'd + embassy_stm32::usb::Instance>(
     const BUFLEN: usize = MAX_PACKET_SIZE;
     let mut buf = [0; BUFLEN];
     let mut rg: Option<RangeFrom<usize>> = None;
-    
+
     loop {
         rg.get_or_insert(0..);
         // info!(
@@ -293,10 +305,14 @@ async fn listen<'d, T: 'd + embassy_stm32::usb::Instance>(
         let cob: COB<G4Command> = COB::new(&mut buf[..], &copy);
         for msg in cob {
             if let Ok(msg) = msg {
-                info!("{:?}", &msg);
+                debug!("{:?}", &msg);
                 match msg {
                     G4Command::CheckState => {
                         CHECK_STATE.store(true, atomic::Ordering::SeqCst);
+                    }
+                    G4Command::ConfigState(state) => {
+                        CONF.store(state, atomic::Ordering::SeqCst);
+                        info!("config updated");
                     }
                     _ => (),
                 }
@@ -313,7 +329,7 @@ async fn listen<'d, T: 'd + embassy_stm32::usb::Instance>(
     Ok(())
 }
 
-const HALL_BUFSIZE: usize = 1024 * 8;
+const HALL_BUFSIZE: usize = 1024 * 4;
 static HALL_DATA: BBBuffer<HALL_BUFSIZE> = BBBuffer::new();
 
 async fn report<'d, T: 'd + embassy_stm32::usb::Instance>(
@@ -331,49 +347,58 @@ async fn report<'d, T: 'd + embassy_stm32::usb::Instance>(
             }
         }
     }
-
+    let mut tkreload = Ticker::every(Duration::from_secs(1));
     loop {
-        let conf = CONF.load(atomic::Ordering::SeqCst);
-        let interval = Duration::from_micros(conf.min_report_interval);
-        let cycles = Duration::from_millis(500).as_ticks() / interval.as_ticks();
-        // info!("report, with interval {}us", conf.min_report_interval);
-        for _ix in 0..cycles {
-            let hall: Option<Vec<u8, HALL_BYTES>>;
-            if let Ok(rd) = hall_con.read() {
-                let copy = &rd[..min(rd.len(), HALL_BYTES)];
-                hall = Some(heapless::Vec::from_slice(copy).unwrap());
-                rd.release(hall.as_ref().unwrap().len());
-            } else {
-                hall = None;
-            };
-            let send_state = CHECK_STATE.fetch_update(
-                atomic::Ordering::SeqCst,
-                atomic::Ordering::SeqCst,
-                |_| Some(false),
-            );
-            let send_state = match send_state {
-                Ok(k) => k,
-                Err(k) => k
-            };
-            let reply = G4Message {
-                hall: hall.unwrap_or_default(),
-                state: if send_state { Some(conf) } else { None },
-            };
-            let rx: Result<heapless::Vec<u8, 1024>, postcard::Error> =
-                postcard::to_vec_cobs(&reply);
-            if let Ok(coded) = rx {
-                let mut chunks = coded.into_iter().array_chunks::<64>();
-                while let Some(p) = chunks.next() {
-                    class.write_packet(&p).await?;
+        let e = embassy_futures::select::select(tkreload.next(), async {
+            debug!("reloading conf");
+            let conf: G4Settings = CONF.load(atomic::Ordering::SeqCst);
+            let mut tkrp = Ticker::every(Duration::from_micros(conf.min_report_interval));
+            loop {
+                let hall: Option<Vec<u8, HALL_BYTES>>;
+                if let Ok(rd) = hall_con.read() {
+                    let copy = &rd[..min(rd.len(), HALL_BYTES)];
+                    hall = Some(heapless::Vec::from_slice(copy).unwrap());
+                    rd.release(hall.as_ref().unwrap().len());
+                } else {
+                    hall = None;
+                };
+                let send_state = CHECK_STATE.fetch_update(
+                    atomic::Ordering::SeqCst,
+                    atomic::Ordering::SeqCst,
+                    |_| Some(false),
+                );
+                let send_state = match send_state {
+                    Ok(k) => k,
+                    Err(k) => k,
+                };
+                let reply = G4Message {
+                    hall: hall.unwrap_or_default(),
+                    state: if send_state { Some(conf) } else { None },
+                };
+                let rx: Result<heapless::Vec<u8, 1024>, postcard::Error> =
+                    postcard::to_vec_cobs(&reply);
+                if let Ok(coded) = rx {
+                    let mut chunks = coded.into_iter().array_chunks::<64>();
+                    while let Some(p) = chunks.next() {
+                        class.write_packet(&p).await?;
+                    }
+                    if let Some(p) = chunks.into_remainder() {
+                        class.write_packet(p.as_slice()).await?;
+                    }
+                } else {
+                    error!("{:?}", rx.unwrap_err())
                 }
-                if let Some(p) = chunks.into_remainder() {
-                    class.write_packet(p.as_slice()).await?;
-                }
-            } else {
-                error!("{:?}", rx.unwrap_err())
+                tkrp.next().await;
             }
-            Timer::after(interval).await;
+
+            Result::<_, Disconnected>::Ok(())
+        })
+        .await;
+        match e {
+            Either::Second(s) => s?,
+            _ => (),
         }
     }
+
     Ok(())
 }

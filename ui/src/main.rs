@@ -122,7 +122,20 @@ impl Application for Page {
                 if let Some(sett) = data.state {
                     println!("{:?}", sett);
                 }
-                self.hall.data_points.push_slice_overwrite(&data.hall);
+                let new = data
+                    .hall
+                    .iter()
+                    .enumerate()
+                    .map(|(x, y)| {
+                        let mut v = [0; 8];
+                        for i in 0..8 {
+                            let k = ((*y) & (1 << i)) != 0;
+                            v[i] = k.into();
+                        }
+                        v.into_iter()
+                    })
+                    .flatten();
+                self.hall.data_points.push_iter_overwrite(new);
             }
             Msg::G4Setting(set) => {
                 if let Some(ref mut sx) = &mut self.g4_sx {
@@ -131,8 +144,9 @@ impl Application for Page {
                         Setting::SetViewport(n, v) => {
                             self.hall.viewport = *n;
                             g4.sampling_window = g4.duration_to_sample_bytes(*v as u64);
+                            self.hall.viewport_points = g4.sampling_window * 8;
                             self.hall.data_points =
-                                HeapRb::new(g4.sampling_window.try_into().unwrap());
+                                HeapRb::new(self.hall.viewport_points.try_into().unwrap());
                         }
                         _ => g4.push(set.clone()),
                     };
@@ -201,10 +215,7 @@ impl Application for Page {
                                 Msg::G4Setting(Setting::SetRefreshIntv(val_us))
                             }
                         ),
-                        text(format!(
-                            "Viewport {}",
-                            self.hall.data_points.capacity().get() as u64 * 8
-                        )),
+                        text(format!("Viewport {}ms", self.hall.viewport_millis())),
                         slider(7..=18u32, self.hall.viewport, |t| {
                             let time_in_millisecs: usize = 2usize.pow(t);
                             Msg::G4Setting(Setting::SetViewport(t, time_in_millisecs))
@@ -364,17 +375,25 @@ async fn handle_g4(portname: String, mut sx: Sender<Msg>) -> anyhow::Result<()> 
 }
 
 struct HallChart {
-    data_points: HeapRb<u8>,
+    data_points: HeapRb<i32>,
     pub viewport: u32,
+    pub viewport_points: u64,
+}
+
+impl HallChart {
+    pub fn viewport_millis(&self) -> usize {
+        2usize.pow(self.viewport)
+    }
 }
 
 impl Default for HallChart {
     fn default() -> Self {
         let mut h = HeapRb::new(100);
-        h.push_iter(iter::repeat(0));
+        // h.push_iter(iter::repeat(0));
         HallChart {
             data_points: h,
             viewport: 7,
+            viewport_points: 0,
         }
     }
 }
@@ -400,7 +419,7 @@ impl Chart<Msg> for HallChart {
             .x_label_area_size(20)
             .y_label_area_size(20)
             .margin(20)
-            .build_cartesian_2d(0..self.data_points.capacity().get() * 8, -1..2)
+            .build_cartesian_2d(0..self.viewport_points as usize, -1..2)
             .unwrap();
         c.configure_mesh()
             .bold_line_style(style::colors::BLUE.mix(0.2))
@@ -409,18 +428,7 @@ impl Chart<Msg> for HallChart {
             .unwrap();
         c.draw_series(
             AreaSeries::new(
-                self.data_points
-                    .iter()
-                    .enumerate()
-                    .map(|(x, y)| {
-                        let mut v = [0; 8];
-                        for i in 0..8 {
-                            let k = ((*y) & (1 << i)) != 0;
-                            v[i] = k.into();
-                        }
-                        v.into_iter().enumerate().map(move |(i, y)| (x * 8 + i, y))
-                    })
-                    .flatten(),
+                self.data_points.iter().enumerate().map(|(x, y)| (x, *y)),
                 0,
                 style::colors::BLUE.mix(0.4),
             )
