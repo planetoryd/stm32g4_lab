@@ -2,8 +2,10 @@
 #![feature(decl_macro)]
 
 use std::any::{self, TypeId};
+use std::cmp::min;
 use std::collections::VecDeque;
 use std::future::pending;
+use std::iter::repeat;
 use std::mem::size_of;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock};
@@ -15,6 +17,7 @@ use common::{
     G4Command, G4Message, G4Settings, Setting, SettingState, BUF_SIZE, FREQ_PRESETS,
     MAX_PACKET_SIZE,
 };
+use freq::FreqChart;
 use futures::channel::mpsc::{self, Receiver, Sender};
 use futures::lock::Mutex;
 use futures::{join, SinkExt, StreamExt};
@@ -24,6 +27,7 @@ use iced::{executor, Length, Padding};
 use iced::{Application, Command, Element, Settings, Theme};
 use iced_aw::{spinner, Spinner};
 use meta::{MetaChart, ReportStat};
+use misc::fill_vec_p2;
 use plotters::style;
 use plotters_iced::{Chart, ChartWidget};
 use ringbuf::traits::{Consumer, Observer, Producer, RingBuffer};
@@ -41,7 +45,9 @@ use tokio_serial::SerialPortBuilderExt;
 // heater temp plot
 // dac output voltage plot
 
+mod freq;
 mod meta;
+mod misc;
 
 macro forever() {
     pending::<()>()
@@ -59,6 +65,7 @@ pub fn main() -> iced::Result {
 #[derive(Default)]
 struct Page {
     pub hall: HallChart,
+    pub freq: FreqChart,
     pub meta: MetaChart,
     pub g4_conn: ConnState,
     pub g4_sx: Option<Sender<PushToG4>>,
@@ -72,6 +79,7 @@ enum Msg {
     G4Setting(Setting),
     G4Cmd(G4Command),
     Stats(Stats),
+    Tick,
     Null,
 }
 
@@ -179,7 +187,36 @@ impl Application for Page {
                 }
             }
             Msg::Stats(stat) => self.stat = stat,
-            _ => (),
+            Msg::Tick => {
+                let v: Vec<_> = self
+                    .hall
+                    .data_points
+                    .iter()
+                    .map(|x| (*x as i16).into())
+                    .collect();
+                let mut hw = hann_window(&v[..]);
+                let g4 = unsafe { G4_CONF.as_mut().unwrap() };
+                let rate = Duration::from_secs(1).as_micros() / g4.sampling_interval as u128;
+                fill_vec_p2(&mut hw);
+                println!("samples {}. rate {}hz", hw.len(), rate);
+                let spec = samples_fft_to_spectrum(
+                    &hw[..],
+                    rate.try_into().unwrap(),
+                    spectrum_analyzer::FrequencyLimit::Range(0.005, min(rate / 2, 1700) as f32),
+                    None,
+                );
+                match spec {
+                    Ok(spec) => {
+                        for (freq, val) in spec.data() {
+                            self.freq.freqs.insert(*freq, *val);
+                        }
+                    }
+                    Err(er) => {
+                        println!("{:?}", er);
+                    }
+                }
+            }
+            Msg::Null => (),
         };
         Command::none()
     }
@@ -216,7 +253,7 @@ impl Application for Page {
                 let sample_int = FREQ_PRESETS.iter().position(|k| *k == g4.sampling_interval);
                 g4.sampling_window;
                 widget::row([
-                    column!(self.hall.view(), self.meta.view()).into(),
+                    column!(self.hall.view(), self.meta.view(), self.freq.view()).into(),
                     column!(
                         text(format!("Sample per {}us", g4.sampling_interval)),
                         slider(0..=4u32, sample_int.unwrap_or(0) as u32, |t| {
@@ -262,6 +299,7 @@ impl Application for Page {
     fn subscription(&self) -> iced::Subscription<Self::Message> {
         struct Host;
         struct Stat;
+        struct Ticker;
         iced::Subscription::batch([
             iced::subscription::channel(
                 TypeId::of::<Host>(),
@@ -332,6 +370,12 @@ impl Application for Page {
                     .await
                     .unwrap();
                     sleep(Duration::from_secs(1)).await;
+                }
+            }),
+            iced::subscription::channel(TypeId::of::<Ticker>(), 10, |mut sx| async move {
+                loop {
+                    sx.send(Msg::Tick).await.unwrap();
+                    sleep(Duration::from_millis(500)).await;
                 }
             }),
         ])
@@ -431,7 +475,7 @@ impl HallChart {
 
 impl Default for HallChart {
     fn default() -> Self {
-        let l = 200;
+        let l = 256;
         let h = HeapRb::new(l);
         HallChart {
             data_points: h,
@@ -479,11 +523,13 @@ impl Chart<Msg> for HallChart {
 
 #[test]
 fn spect() -> anyhow::Result<()> {
-    let samples = [0f32, 1., 0., 0., 1., 0., 0., 1.];
+    let samples = [
+        0f32, 1., 1., 1., 1., 0., 0., 1., 0., 0., 0., 0., 1., 0., 1., 1.,
+    ];
     let w = hann_window(&samples[..]);
     dbg!(&w);
     let spec =
-        samples_fft_to_spectrum(&w, 4, spectrum_analyzer::FrequencyLimit::All, None).unwrap();
+        samples_fft_to_spectrum(&w, 256, spectrum_analyzer::FrequencyLimit::All, None).unwrap();
     for (fr, v) in spec.data().iter() {
         println!("{}hz -> {}", fr, v);
     }
