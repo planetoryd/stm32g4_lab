@@ -4,3 +4,6 @@
 [submodule "async-codec-nostd"]
 	path = async-codec-nostd
 	url = https://github.com/planetoryd/async-codec-nostd
+[submodule "ui/iced_table"]
+	path = ui/iced_table
+	url = https://github.com/tarkah/iced_table

@@ -1,6 +1,11 @@
 use std::collections::BTreeMap;
 
-use iced::{widget::column, Element};
+use iced::{
+    widget::{column, container, row, scrollable::Id, text},
+    Element, Length, Renderer, Theme,
+};
+use iced_aw::{grid, grid_row};
+use iced_table::table;
 use plotters::{
     prelude::{BindKeyPoints, IntoLogRange},
     series::AreaSeries,
@@ -14,13 +19,19 @@ use crate::Msg;
 #[derive(Default)]
 pub struct FreqChart {
     pub freqs: BTreeMap<Frequency, Frequency>,
+    pub cols: Vec<Col>,
+    pub rows: Vec<Row>,
 }
 
 impl FreqChart {
     pub fn view(&self) -> Element<Msg> {
         let chart = ChartWidget::new(self);
-
-        column!(chart).into()
+        let table = iced_table::table(Id::unique(), Id::unique(), &self.cols, &self.rows, |s| {
+            Msg::Null
+        });
+        row!(chart, table)
+            .align_items(iced::Alignment::Center)
+            .into()
     }
 }
 
@@ -39,12 +50,9 @@ impl Chart<Msg> for FreqChart {
         let points_x = self.freqs.iter().map(|x| x.0.val());
         let mut cx = c
             .x_label_area_size(20)
-            .y_label_area_size(20)
+            .y_label_area_size(40)
             .margin(10)
-            .build_cartesian_2d(
-                (min.0.val()..max.0.val()),
-                0f32..50f32,
-            )
+            .build_cartesian_2d((min.0.val()..max.0.val()), 0f32..50f32)
             .unwrap();
         cx.configure_mesh().draw().unwrap();
         cx.draw_series(AreaSeries::new(
@@ -53,5 +61,67 @@ impl Chart<Msg> for FreqChart {
             style::colors::BLUE.mix(0.5).filled(),
         ))
         .unwrap();
+    }
+}
+
+#[derive(Clone)]
+pub enum Colkind {
+    Freq,
+    Val,
+}
+
+#[derive(Clone)]
+pub struct Col {
+    pub kind: Colkind,
+    pub width: f32
+}
+
+#[derive(Clone)]
+pub struct Row {
+    pub note: String,
+}
+
+impl<'a> table::Column<'a, Msg, Theme, Renderer> for Col {
+    type Row = Row;
+    fn header(
+        &'a self,
+        col_index: usize,
+    ) -> iced::advanced::graphics::core::Element<'a, Msg, Theme, Renderer> {
+        let con = match self.kind {
+            Colkind::Freq => "Freq",
+            Colkind::Val => "Val",
+        };
+
+        container(text(con)).height(Length::Shrink).center_y().into()
+    }
+    fn cell(
+        &'a self,
+        col_index: usize,
+        row_index: usize,
+        row: &'a Self::Row,
+    ) -> iced::advanced::graphics::core::Element<'a, Msg, Theme, Renderer> {
+        let con: Element<_> = match self.kind {
+            Colkind::Freq => text("1").into(),
+            Colkind::Val => text("2").into(),
+        };
+
+        container(con)
+            .width(Length::Fill)
+            .height(Length::Shrink)
+            .center_y()
+            .into()
+    }
+    fn footer(
+        &'a self,
+        _col_index: usize,
+        _rows: &'a [Self::Row],
+    ) -> Option<iced::advanced::graphics::core::Element<'a, Msg, Theme, Renderer>> {
+        None
+    }
+    fn width(&self) -> f32 {
+        self.width
+    }
+    fn resize_offset(&self) -> Option<f32> {
+        None
     }
 }

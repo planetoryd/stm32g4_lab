@@ -17,7 +17,7 @@ use common::{
     G4Command, G4Message, G4Settings, Setting, SettingState, BUF_SIZE, FREQ_PRESETS,
     MAX_PACKET_SIZE,
 };
-use freq::FreqChart;
+use freq::{Col, FreqChart};
 use futures::channel::mpsc::{self, Receiver, Sender};
 use futures::lock::Mutex;
 use futures::{join, SinkExt, StreamExt};
@@ -122,6 +122,21 @@ impl Application for Page {
 
     fn new(_flags: ()) -> (Page, Command<Self::Message>) {
         let mut k = Page::default();
+        let cols = [Col {
+            kind: freq::Colkind::Freq,
+            width: 60.
+        }, Col {
+            kind: freq::Colkind::Val,
+            width: 60.
+        }];
+        let rows = [freq::Row {
+            note: "r1".to_owned(),
+        }, freq::Row {
+            note: "r2".to_owned(),
+        }];
+
+        k.freq.cols = cols.to_vec();
+        k.freq.rows = rows.to_vec();
         let (s, r) = mpsc::channel(1);
         k.g4_sx = Some(s);
         unsafe {

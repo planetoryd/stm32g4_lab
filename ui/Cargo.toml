@@ -19,3 +19,4 @@ ringbuf = "0.4.1"
 spectrum-analyzer = "1.5.0"
 heapless = "0.7"
 console-subscriber = "0.3.0"
+iced_table = { version = "0.12", path = "./iced_table" }

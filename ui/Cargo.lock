@@ -1665,6 +1665,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "iced_table"
+version = "0.12.0"
+dependencies = [
+ "iced_core",
+ "iced_style",
+ "iced_widget",
+]
+
+[[package]]
 name = "iced_tiny_skia"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3848,6 +3857,7 @@ dependencies = [
  "heapless",
  "iced",
  "iced_aw",
+ "iced_table",
  "plotters",
  "plotters-iced",
  "postcard",
