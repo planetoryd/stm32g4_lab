@@ -207,6 +207,8 @@ impl Application for Page {
                     .hall
                     .data_points
                     .iter()
+                    .rev()
+                    .take(16384) // max size supported by analyzer
                     .map(|x| (*x as i16).into())
                     .collect();
                 let mut hw = hann_window(&v[..]);
@@ -229,14 +231,14 @@ impl Application for Page {
                                 .insert(Frequency::from(rounded), Frequency::from(v.val().round()));
                         }
                         let mut vec: Vec<_> = self.freq.freqs.iter().collect();
-                        vec.sort_by(|a,b| {
+                        vec.sort_by(|a, b| {
                             let k = a.1.cmp(b.1);
                             if k == cmp::Ordering::Equal {
                                 b.0.cmp(a.0)
                             } else {
                                 k
                             }
-                        }); 
+                        });
                         let rows = vec
                             .into_iter()
                             .map(|(freq, val)| freq::Row {
@@ -244,7 +246,7 @@ impl Application for Page {
                                 val: *val,
                             })
                             .rev();
-                        self.freq.rows = rows.collect();
+                        self.freq.top = rows.collect();
                     }
                     Err(er) => {
                         println!("{:?}", er);

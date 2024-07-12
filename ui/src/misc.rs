@@ -7,7 +7,7 @@ pub fn fill_vec_p2<T: Default + Clone>(ve: &mut Vec<T>) {
     let mut sol = 1;
     for m in 0..32 {
         sol = 1 << m;
-        if sol > base {
+        if sol >= base {
             break;
         }
     }
@@ -18,6 +18,13 @@ pub fn fill_vec_p2<T: Default + Clone>(ve: &mut Vec<T>) {
 #[test]
 fn testvec2() {
     let mut v1: Vec<i32> = repeat(2).take(32760).collect();
+    fill_vec_p2(&mut v1);
+    dbg!(v1.len());
+}
+
+#[test]
+fn testvec22() {
+    let mut v1: Vec<i32> = repeat(2).take(16384).collect();
     fill_vec_p2(&mut v1);
     dbg!(v1.len());
 }
