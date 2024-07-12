@@ -18,7 +18,7 @@ use crate::Msg;
 
 #[derive(Default)]
 pub struct FreqChart {
-    pub freqs: BTreeMap<u32, f32>,
+    pub freqs: BTreeMap<Frequency, Frequency>,
     pub cols: Vec<Col>,
     pub rows: Vec<Row>,
 }
@@ -52,11 +52,11 @@ impl Chart<Msg> for FreqChart {
             .x_label_area_size(20)
             .y_label_area_size(40)
             .margin(10)
-            .build_cartesian_2d((*min.0..*max.0), 0f32..50f32)
+            .build_cartesian_2d(min.0.val()..max.0.val(), 0f32..50f32)
             .unwrap();
         cx.configure_mesh().draw().unwrap();
         cx.draw_series(AreaSeries::new(
-            self.freqs.iter().map(|(x, y)| (*x, *y)),
+            self.freqs.iter().map(|(x, y)| (x.val(), y.val())),
             0.,
             style::colors::BLUE.mix(0.5).filled(),
         ))
@@ -73,13 +73,13 @@ pub enum Colkind {
 #[derive(Clone)]
 pub struct Col {
     pub kind: Colkind,
-    pub width: f32
+    pub width: f32,
 }
 
 #[derive(Clone)]
 pub struct Row {
-    pub freq: f32,
-    pub val: f32
+    pub freq: Frequency,
+    pub val: Frequency,
 }
 
 impl<'a> table::Column<'a, Msg, Theme, Renderer> for Col {
@@ -93,7 +93,12 @@ impl<'a> table::Column<'a, Msg, Theme, Renderer> for Col {
             Colkind::Val => "Val",
         };
 
-        container(text(con)).width(Length::Fill).height(Length::Shrink).center_x().center_y().into()
+        container(text(con))
+            .width(Length::Fill)
+            .height(Length::Shrink)
+            .center_x()
+            .center_y()
+            .into()
     }
     fn cell(
         &'a self,

@@ -20,3 +20,5 @@ spectrum-analyzer = "1.5.0"
 heapless = "0.7"
 console-subscriber = "0.3.0"
 iced_table = { version = "0.12", path = "./iced_table" }
+rust_decimal = "1.35.0"
+rust_decimal_macros = "1.35.0"

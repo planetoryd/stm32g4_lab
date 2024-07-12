@@ -23,6 +23,7 @@ use futures::channel::mpsc::{self, Receiver, Sender};
 use futures::lock::Mutex;
 use futures::{join, SinkExt, StreamExt};
 use iced::alignment::{Horizontal, Vertical};
+use iced::widget::canvas::path::lyon_path::geom::euclid::approxeq::ApproxEq;
 use iced::widget::canvas::path::lyon_path::geom::euclid::num::Round;
 use iced::widget::{self, button, column, container, row, slider, text, Column, Container, Row};
 use iced::{executor, Length, Padding};
@@ -35,8 +36,8 @@ use plotters_iced::{Chart, ChartWidget};
 use ringbuf::traits::{Consumer, Observer, Producer, RingBuffer};
 use ringbuf::{HeapRb, LocalRb};
 use serialport::{SerialPort, SerialPortType};
-use spectrum_analyzer::{samples_fft_to_spectrum, Frequency};
 use spectrum_analyzer::windows::hann_window;
+use spectrum_analyzer::{samples_fft_to_spectrum, Frequency};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::RwLock;
 use tokio::task::JoinSet;
@@ -216,19 +217,28 @@ impl Application for Page {
                 let spec = samples_fft_to_spectrum(
                     &hw[..],
                     rate.try_into().unwrap(),
-                    spectrum_analyzer::FrequencyLimit::Range(0.5, min(rate / 2, 1700) as f32),
+                    spectrum_analyzer::FrequencyLimit::Range(0.2, min(rate / 2, 1700) as f32),
                     None,
                 );
                 match spec {
                     Ok(spec) => {
-                        self.freq.freqs = spec.to_map();
+                        for (f, v) in spec.data() {
+                            let rounded = if f.val() < 1. {
+                                0.5
+                            } else {
+                                f.val().round()
+                            };
+                            self.freq
+                                .freqs
+                                .insert(Frequency::from(rounded), Frequency::from(v.val().round()));
+                        }
                         let mut vec: Vec<_> = self.freq.freqs.iter().collect();
-                        vec.sort_by_key(|x| Frequency::from(*x.1));
+                        vec.sort_by_key(|(f, v)| *v);
                         let rows = vec
                             .into_iter()
                             .map(|(freq, val)| freq::Row {
-                                freq: *freq as f32,
-                                val: val.round(),
+                                freq: *freq,
+                                val: *val,
                             })
                             .rev();
                         self.freq.rows = rows.collect();
