@@ -2,7 +2,7 @@
 #![feature(decl_macro)]
 
 use std::any::{self, TypeId};
-use std::cmp::min;
+use std::cmp::{self, min};
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, VecDeque};
 use std::future::pending;
@@ -223,17 +223,20 @@ impl Application for Page {
                 match spec {
                     Ok(spec) => {
                         for (f, v) in spec.data() {
-                            let rounded = if f.val() < 1. {
-                                0.5
-                            } else {
-                                f.val().round()
-                            };
+                            let rounded = if f.val() < 1. { 0.5 } else { f.val().round() };
                             self.freq
                                 .freqs
                                 .insert(Frequency::from(rounded), Frequency::from(v.val().round()));
                         }
                         let mut vec: Vec<_> = self.freq.freqs.iter().collect();
-                        vec.sort_by_key(|(f, v)| *v);
+                        vec.sort_by(|a,b| {
+                            let k = a.1.cmp(b.1);
+                            if k == cmp::Ordering::Equal {
+                                b.0.cmp(a.0)
+                            } else {
+                                k
+                            }
+                        }); 
                         let rows = vec
                             .into_iter()
                             .map(|(freq, val)| freq::Row {
