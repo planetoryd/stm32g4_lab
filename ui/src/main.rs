@@ -431,12 +431,12 @@ impl HallChart {
 
 impl Default for HallChart {
     fn default() -> Self {
-        let mut h = HeapRb::new(100);
-        // h.push_iter(iter::repeat(0));
+        let l = 200;
+        let h = HeapRb::new(l);
         HallChart {
             data_points: h,
             viewport: 7,
-            viewport_points: 0,
+            viewport_points: l as u64,
         }
     }
 }
@@ -444,6 +444,7 @@ impl Default for HallChart {
 impl HallChart {
     fn view(&self) -> Element<Msg> {
         column!(ChartWidget::new(self), text("hall"))
+            .height(150)
             .align_items(iced::Alignment::Center)
             .into()
     }
@@ -459,23 +460,18 @@ impl Chart<Msg> for HallChart {
         DRAW_COUNTER.fetch_add(1, Ordering::SeqCst);
         use plotters::prelude::*;
         let mut c = c
-            .x_label_area_size(20)
+            .x_label_area_size(10)
             .y_label_area_size(20)
             .margin(10)
-            .build_cartesian_2d(0..self.viewport_points as usize, -1..2)
+            .build_cartesian_2d(0..self.viewport_points as usize, 0..1)
             .unwrap();
-        c.configure_mesh()
-            .bold_line_style(style::colors::BLUE.mix(0.2))
-            .light_line_style(plotters::style::colors::BLUE.mix(0.1))
-            .draw()
-            .unwrap();
+        c.configure_mesh().draw().unwrap();
         c.draw_series(
-            AreaSeries::new(
-                self.data_points.iter().enumerate().map(|(x, y)| (x, *y)),
-                0,
-                style::colors::BLUE.mix(0.4),
-            )
-            .border_style(ShapeStyle::from(style::colors::BLUE).stroke_width(2)),
+            Histogram::vertical(&c)
+                .data(self.data_points.iter().enumerate().map(|(x, y)| (x, *y)))
+                .margin(0)
+                .style(style::colors::BLUE.mix(0.5).filled())
+                .baseline(0),
         )
         .unwrap();
     }

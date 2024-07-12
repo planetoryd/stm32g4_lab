@@ -68,7 +68,8 @@ impl Chart<Msg> for MetaChart {
         c.draw_series(
             Histogram::vertical(&c)
                 .data(iter)
-                .style(style::colors::BLUE.mix(0.5).filled()),
+                .style(style::colors::BLUE.mix(0.8).filled())
+                .margin(0),
         )
         .unwrap();
     }
