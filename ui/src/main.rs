@@ -202,11 +202,13 @@ impl Application for Page {
                 let spec = samples_fft_to_spectrum(
                     &hw[..],
                     rate.try_into().unwrap(),
-                    spectrum_analyzer::FrequencyLimit::Range(0.005, min(rate / 2, 1700) as f32),
+                    spectrum_analyzer::FrequencyLimit::Range(0.5, min(rate / 2, 1700) as f32),
                     None,
                 );
                 match spec {
                     Ok(spec) => {
+                        self.freq.freqs.clear();
+                        println!("{:?}", spec.max());
                         for (freq, val) in spec.data() {
                             self.freq.freqs.insert(*freq, *val);
                         }
