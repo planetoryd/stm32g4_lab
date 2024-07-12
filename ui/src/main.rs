@@ -3,7 +3,8 @@
 
 use std::any::{self, TypeId};
 use std::cmp::min;
-use std::collections::VecDeque;
+use std::collections::btree_map::Entry;
+use std::collections::{BTreeMap, VecDeque};
 use std::future::pending;
 use std::iter::repeat;
 use std::mem::size_of;
@@ -22,6 +23,7 @@ use futures::channel::mpsc::{self, Receiver, Sender};
 use futures::lock::Mutex;
 use futures::{join, SinkExt, StreamExt};
 use iced::alignment::{Horizontal, Vertical};
+use iced::widget::canvas::path::lyon_path::geom::euclid::num::Round;
 use iced::widget::{self, button, column, container, row, slider, text, Column, Container, Row};
 use iced::{executor, Length, Padding};
 use iced::{Application, Command, Element, Settings, Theme};
@@ -33,7 +35,7 @@ use plotters_iced::{Chart, ChartWidget};
 use ringbuf::traits::{Consumer, Observer, Producer, RingBuffer};
 use ringbuf::{HeapRb, LocalRb};
 use serialport::{SerialPort, SerialPortType};
-use spectrum_analyzer::samples_fft_to_spectrum;
+use spectrum_analyzer::{samples_fft_to_spectrum, Frequency};
 use spectrum_analyzer::windows::hann_window;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::RwLock;
@@ -122,21 +124,18 @@ impl Application for Page {
 
     fn new(_flags: ()) -> (Page, Command<Self::Message>) {
         let mut k = Page::default();
-        let cols = [Col {
-            kind: freq::Colkind::Freq,
-            width: 60.
-        }, Col {
-            kind: freq::Colkind::Val,
-            width: 60.
-        }];
-        let rows = [freq::Row {
-            note: "r1".to_owned(),
-        }, freq::Row {
-            note: "r2".to_owned(),
-        }];
+        let cols = [
+            Col {
+                kind: freq::Colkind::Freq,
+                width: 60.,
+            },
+            Col {
+                kind: freq::Colkind::Val,
+                width: 60.,
+            },
+        ];
 
         k.freq.cols = cols.to_vec();
-        k.freq.rows = rows.to_vec();
         let (s, r) = mpsc::channel(1);
         k.g4_sx = Some(s);
         unsafe {
@@ -222,11 +221,17 @@ impl Application for Page {
                 );
                 match spec {
                     Ok(spec) => {
-                        self.freq.freqs.clear();
-                        println!("{:?}", spec.max());
-                        for (freq, val) in spec.data() {
-                            self.freq.freqs.insert(*freq, *val);
-                        }
+                        self.freq.freqs = spec.to_map();
+                        let mut vec: Vec<_> = self.freq.freqs.iter().collect();
+                        vec.sort_by_key(|x| Frequency::from(*x.1));
+                        let rows = vec
+                            .into_iter()
+                            .map(|(freq, val)| freq::Row {
+                                freq: *freq as f32,
+                                val: val.round(),
+                            })
+                            .rev();
+                        self.freq.rows = rows.collect();
                     }
                     Err(er) => {
                         println!("{:?}", er);

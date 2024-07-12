@@ -18,7 +18,7 @@ use crate::Msg;
 
 #[derive(Default)]
 pub struct FreqChart {
-    pub freqs: BTreeMap<Frequency, Frequency>,
+    pub freqs: BTreeMap<u32, f32>,
     pub cols: Vec<Col>,
     pub rows: Vec<Row>,
 }
@@ -47,16 +47,16 @@ impl Chart<Msg> for FreqChart {
         }
         let min = self.freqs.first_key_value().unwrap();
         let max = self.freqs.last_key_value().unwrap();
-        let points_x = self.freqs.iter().map(|x| x.0.val());
+        let points_x = self.freqs.iter().map(|x| x.0);
         let mut cx = c
             .x_label_area_size(20)
             .y_label_area_size(40)
             .margin(10)
-            .build_cartesian_2d((min.0.val()..max.0.val()), 0f32..50f32)
+            .build_cartesian_2d((*min.0..*max.0), 0f32..50f32)
             .unwrap();
         cx.configure_mesh().draw().unwrap();
         cx.draw_series(AreaSeries::new(
-            self.freqs.iter().map(|(x, y)| (x.val(), y.val())),
+            self.freqs.iter().map(|(x, y)| (*x, *y)),
             0.,
             style::colors::BLUE.mix(0.5).filled(),
         ))
@@ -78,7 +78,8 @@ pub struct Col {
 
 #[derive(Clone)]
 pub struct Row {
-    pub note: String,
+    pub freq: f32,
+    pub val: f32
 }
 
 impl<'a> table::Column<'a, Msg, Theme, Renderer> for Col {
@@ -92,7 +93,7 @@ impl<'a> table::Column<'a, Msg, Theme, Renderer> for Col {
             Colkind::Val => "Val",
         };
 
-        container(text(con)).height(Length::Shrink).center_y().into()
+        container(text(con)).width(Length::Fill).height(Length::Shrink).center_x().center_y().into()
     }
     fn cell(
         &'a self,
@@ -101,8 +102,8 @@ impl<'a> table::Column<'a, Msg, Theme, Renderer> for Col {
         row: &'a Self::Row,
     ) -> iced::advanced::graphics::core::Element<'a, Msg, Theme, Renderer> {
         let con: Element<_> = match self.kind {
-            Colkind::Freq => text("1").into(),
-            Colkind::Val => text("2").into(),
+            Colkind::Freq => text(row.freq).into(),
+            Colkind::Val => text(row.val).into(),
         };
 
         container(con)
