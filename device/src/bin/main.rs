@@ -9,6 +9,7 @@
 use core::{
     cmp::{max, min},
     future::{pending, Pending},
+    hash::{Hash, Hasher, SipHasher},
     ops::{Range, RangeFrom},
     sync::atomic::{self, AtomicBool},
 };
@@ -350,8 +351,9 @@ async fn report<'d, T: 'd + embassy_stm32::usb::Instance>(
     let mut tkreload = Ticker::every(Duration::from_secs(1));
     loop {
         let e = embassy_futures::select::select(tkreload.next(), async {
-            debug!("reloading conf");
+            // debug!("reloading conf");
             let conf: G4Settings = CONF.load(atomic::Ordering::SeqCst);
+
             let mut tkrp = Ticker::every(Duration::from_micros(conf.min_report_interval));
             loop {
                 let hall: Option<Vec<u8, HALL_BYTES>>;
@@ -374,6 +376,7 @@ async fn report<'d, T: 'd + embassy_stm32::usb::Instance>(
                 let reply = G4Message {
                     hall: hall.unwrap_or_default(),
                     state: if send_state { Some(conf) } else { None },
+                    ack: conf.id,
                 };
                 let rx: Result<heapless::Vec<u8, 1024>, postcard::Error> =
                     postcard::to_vec_cobs(&reply);

@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::future::pending;
 use std::iter::repeat;
 use std::mem::size_of;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 use std::{default, iter};
@@ -313,8 +313,11 @@ impl Application for Page {
                         }),
                         controls,
                         text(format!(
-                            "reports {}/s \nframe {}/s",
-                            self.stat.reports_per_sec, self.stat.frame_per_sec
+                            "reports {}/s \nframe {}/s\nsettings {}/{}",
+                            self.stat.reports_per_sec,
+                            self.stat.frame_per_sec,
+                            g4.id,
+                            ACK.load(Ordering::SeqCst)
                         ))
                     )
                     .width(200)
@@ -421,6 +424,7 @@ impl Application for Page {
 
 static REPORT_COUNTER: AtomicU32 = AtomicU32::new(0);
 static DRAW_COUNTER: AtomicU32 = AtomicU32::new(0);
+static ACK: AtomicU64 = AtomicU64::new(0);
 
 async fn handle_g4(portname: String, mut sx: Sender<Msg>) -> anyhow::Result<()> {
     println!("handle g4 {}", portname);
@@ -440,9 +444,11 @@ async fn handle_g4(portname: String, mut sx: Sender<Msg>) -> anyhow::Result<()> 
         while let (Some(rxd), _) = join!(rx.next(), sleep(Duration::from_millis(500))) {
             let pakt = match rxd {
                 PushToG4::CMD(cmd) => cmd,
-                PushToG4::Notify => {
-                    G4Command::ConfigState(unsafe { G4_CONF.as_ref().unwrap().clone() })
-                }
+                PushToG4::Notify => G4Command::ConfigState({
+                    let conf = unsafe { G4_CONF.as_mut().unwrap() };
+                    conf.id += 1;
+                    conf.clone()
+                }),
             };
             println!("send {:?}", &pakt);
             let en: heapless::Vec<u8, MAX_PACKET_SIZE> = postcard::to_vec_cobs(&pakt).unwrap();
@@ -486,6 +492,7 @@ async fn handle_g4(portname: String, mut sx: Sender<Msg>) -> anyhow::Result<()> 
         let des: Result<G4Message, postcard::Error> = postcard::from_bytes_cobs(&mut packet);
         match des {
             Ok(decoded) => {
+                ACK.store(decoded.ack, Ordering::SeqCst);
                 let s = Msg::G4Data(decoded);
                 sx.send(s).await?;
             }

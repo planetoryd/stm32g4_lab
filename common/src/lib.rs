@@ -12,14 +12,15 @@ use static_assertions::const_assert;
 pub struct G4Message {
     /// Data from hall effect sensor
     pub hall: Vec<u8, HALL_BYTES>,
-    pub state: Option<G4Settings>
+    pub state: Option<G4Settings>,
+    pub ack: u64
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Format)]
 pub enum G4Command {
     ConfigDelta(Setting),
     ConfigState(G4Settings),
-    CheckState
+    CheckState,
 }
 
 /// in us
@@ -34,6 +35,7 @@ pub struct G4Settings {
     pub min_report_interval: u64,
     /// used for ui, num of sample bytes
     pub sampling_window: u64,
+    pub id: u64,
 }
 
 impl Default for G4Settings {
@@ -48,6 +50,7 @@ impl G4Settings {
             sampling_interval: 1024,
             min_report_interval: FREQ_PRESETS[4],
             sampling_window: 200,
+            id: 0
         }
     }
 }
@@ -108,4 +111,3 @@ const_assert!(size_of::<G4Command>() < MAX_PACKET_SIZE);
 
 pub mod cob;
 pub mod num;
-
