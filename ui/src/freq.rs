@@ -53,7 +53,7 @@ impl Chart<Msg> for FreqChart {
         // let points_x = self.freqs.iter().map(|x| x.0);
         let mut cx = c
             .x_label_area_size(20)
-            .y_label_area_size(40)
+            .y_label_area_size(30)
             .margin(10)
             .build_cartesian_2d(min.0.val()..max.0.val(), 0f32..250f32)
             .unwrap();
@@ -72,8 +72,8 @@ impl Chart<Msg> for FreqChart {
             root.draw(&Cross::new(pos, 5, plotters::style::BLUE.mix(0.8)))
                 .unwrap();
             pos.1 = 20 + ix as i32 * 20;
-            root.draw_text(&row.freq.val().to_string(), &text, pos)
-                .unwrap();
+            let txt = format!("{}Hz={}RPM", row.freq.val(), row.freq.val() * 60.);
+            root.draw_text(&txt, &text, pos).unwrap();
         }
     }
     fn build_chart<DB: plotters::prelude::DrawingBackend>(

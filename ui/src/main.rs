@@ -542,7 +542,7 @@ impl Chart<Msg> for HallChart {
         use plotters::prelude::*;
         let mut c = c
             .x_label_area_size(10)
-            .y_label_area_size(20)
+            .y_label_area_size(30)
             .margin(10)
             .build_cartesian_2d(0..self.viewport_points as usize, 0..1)
             .unwrap();

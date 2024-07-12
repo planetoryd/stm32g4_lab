@@ -56,7 +56,7 @@ impl Chart<Msg> for MetaChart {
             .map(|(x, y)| (x, y.hall_bytes_len));
         let mut c = c
             .x_label_area_size(20)
-            .y_label_area_size(20)
+            .y_label_area_size(30)
             .margin(10)
             .build_cartesian_2d(0..self.reports.capacity().into(), 0..HALL_BYTES)
             .unwrap();
