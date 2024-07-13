@@ -21,6 +21,7 @@ pub enum G4Command {
     ConfigDelta(Setting),
     ConfigState(G4Settings),
     CheckState,
+    SetDAC(u32)
 }
 
 /// in us

@@ -53,11 +53,13 @@ use embassy_executor::{SpawnToken, Spawner};
 use embassy_stm32::{
     adc::{self, Adc, Temperature, VrefInt},
     bind_interrupts,
+    dac::{Dac, DacCh1, Value},
     dma::WritableRingBuffer,
     exti::ExtiInput,
     gpio::{self, Level, Output, Pull, Speed},
+    interrupt,
     opamp::{self, *},
-    peripherals::{OPAMP1, PA1, PB10, TIM2, USB},
+    peripherals::{DAC1, DMA1, OPAMP1, PA1, PA4, PB10, TIM2, USB},
     time::{khz, mhz},
     timer::pwm_input::PwmInput,
     usb::Driver,
@@ -106,6 +108,7 @@ async fn main(spawner: Spawner) {
     // info!("init opmap for hall effect sensor");
     // let mut adc: Adc<peripherals::ADC1> = Adc::new(p.ADC1);
     // adc.set_sample_time(adc::SampleTime::CYCLES24_5);
+    // adc.blocking_read(&mut p.PB0);
     // let mut vrefint = adc.enable_vrefint();
     // let mut temp = adc.enable_temperature();
     unwrap!(spawner.spawn(led(Output::new(p.PC13, Level::High, Speed::Low))));
@@ -162,6 +165,7 @@ async fn main(spawner: Spawner) {
         }
     };
 
+    unwrap!(spawner.spawn(balance(p.DAC1, p.DMA1, p.PA4)));
     unwrap!(spawner.spawn(hall_digital(p.PA1, prod)));
     // spawner
     //     .spawn(hall_watcher(adc, p.OPAMP1, p.PA1, vrefint, temp))
@@ -208,6 +212,22 @@ async fn hall_watcher(
         // Timer::after_millis(HALL_INTERVAL).await;
     }
 }
+
+#[embassy_executor::task]
+async fn balance(dac: DAC1, dma: DMA1, pin: PA4) {
+    let mut dac = DacCh1::new(dac, dma, pin);
+    dac.enable();
+    let mut tk = Ticker::every(Duration::from_millis(500));
+    loop {
+        tk.next().await;
+        let v = unsafe { DAC_VAL };
+        if v < 4096 {
+            dac.set(Value::Bit12Left(v as u16));
+        }
+    }
+}
+
+static mut DAC_VAL: u32 = 0;
 
 #[embassy_executor::task]
 async fn hall_digital(pa1: PA1, mut prod: Producer<'static, HALL_BUFSIZE>) {
@@ -293,10 +313,6 @@ async fn listen<'d, T: 'd + embassy_stm32::usb::Instance>(
 
     loop {
         rg.get_or_insert(0..);
-        // info!(
-        //     "read into {}",
-        //     (&mut buf[rg.as_ref().unwrap().clone()]).len()
-        // );
         let rd = rx.read_packet(&mut buf[rg.take().unwrap()]).await?;
         if rd == 0 {
             Timer::after_secs(2).await;
@@ -314,6 +330,10 @@ async fn listen<'d, T: 'd + embassy_stm32::usb::Instance>(
                     G4Command::ConfigState(state) => {
                         CONF.store(state, atomic::Ordering::SeqCst);
                         info!("config updated");
+                    }
+                    G4Command::SetDAC(dac) => {
+                        debug!("set dac to {}", dac);
+                        unsafe { DAC_VAL = dac };
                     }
                     _ => (),
                 }

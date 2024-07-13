@@ -13,6 +13,7 @@ use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 use std::{default, iter};
 
+use balance::DACChart;
 use common::num::log2;
 use common::{
     G4Command, G4Message, G4Settings, Setting, SettingState, BUF_SIZE, FREQ_PRESETS,
@@ -48,6 +49,7 @@ use tokio_serial::SerialPortBuilderExt;
 // heater temp plot
 // dac output voltage plot
 
+mod balance;
 mod freq;
 mod meta;
 mod misc;
@@ -70,9 +72,11 @@ struct Page {
     pub hall: HallChart,
     pub freq: FreqChart,
     pub meta: MetaChart,
+    pub dac: DACChart,
     pub g4_conn: ConnState,
     pub g4_sx: Option<Sender<PushToG4>>,
     pub stat: Stats,
+    pub dac_val: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -195,6 +199,12 @@ impl Application for Page {
                 }
             }
             Msg::G4Cmd(cmd) => {
+                match &cmd {
+                    G4Command::SetDAC(dac) => {
+                        self.dac_val = *dac;
+                    }
+                    _ => (),
+                }
                 if let Some(ref mut sx) = &mut self.g4_sx {
                     let _ = sx.try_send(PushToG4::CMD(cmd));
                 } else {
@@ -290,7 +300,13 @@ impl Application for Page {
                 let sample_int = FREQ_PRESETS.iter().position(|k| *k == g4.sampling_interval);
                 g4.sampling_window;
                 widget::row([
-                    column!(self.hall.view(), self.meta.view(), self.freq.view()).into(),
+                    column!(
+                        self.hall.view(),
+                        self.meta.view(),
+                        self.freq.view(),
+                        self.dac.view()
+                    )
+                    .into(),
                     column!(
                         text(format!("Sample per {}us", g4.sampling_interval)),
                         slider(0..=4u32, sample_int.unwrap_or(0) as u32, |t| {
@@ -310,6 +326,10 @@ impl Application for Page {
                         slider(7..=18u32, self.hall.viewport, |t| {
                             let time_in_millisecs: usize = 2usize.pow(t);
                             Msg::G4Setting(Setting::SetViewport(t, time_in_millisecs))
+                        }),
+                        text(format!("DAC-OUT {}", self.dac_val)),
+                        slider(0..=4095, self.dac_val, |t| {
+                            Msg::G4Cmd(G4Command::SetDAC(t))
                         }),
                         controls,
                         text(format!(
