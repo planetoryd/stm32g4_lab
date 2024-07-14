@@ -11,7 +11,7 @@ use core::{
     future::{pending, Pending},
     hash::{Hash, Hasher, SipHasher},
     ops::{Range, RangeFrom},
-    sync::atomic::{self, AtomicBool},
+    sync::atomic::{self, AtomicBool, AtomicU16, AtomicU32},
 };
 
 use ::atomic::Atomic;
@@ -59,7 +59,7 @@ use embassy_stm32::{
     gpio::{self, Level, Output, Pull, Speed},
     interrupt,
     opamp::{self, *},
-    peripherals::{DAC1, DMA1, OPAMP1, PA1, PA4, PB10, TIM2, USB},
+    peripherals::{DAC1, DMA1, OPAMP1, PA1, PA4, PB0, PB10, TIM2, USB},
     time::{khz, mhz},
     timer::pwm_input::PwmInput,
     usb::Driver,
@@ -79,9 +79,6 @@ type HallData = u8;
 static CONF: Atomic<G4Settings> = Atomic::new(G4Settings::new());
 static CONF_NOTIF: PubSubChannel<CriticalSectionRawMutex, (), 4, 2, 1> = PubSubChannel::new();
 static CHECK_STATE: AtomicBool = AtomicBool::new(false);
-
-// todo: hall effect sensor speed meter
-// electromagnetic microbalance
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -165,7 +162,7 @@ async fn main(spawner: Spawner) {
         }
     };
 
-    unwrap!(spawner.spawn(balance(p.DAC1, p.DMA1, p.PA4)));
+    unwrap!(spawner.spawn(balance(p.DAC1, p.DMA1, p.PA4, p.PB0)));
     unwrap!(spawner.spawn(hall_digital(p.PA1, prod)));
     // spawner
     //     .spawn(hall_watcher(adc, p.OPAMP1, p.PA1, vrefint, temp))
@@ -213,21 +210,56 @@ async fn hall_watcher(
     }
 }
 
+enum PointerState {
+    Below,
+    Above,
+    Mid,
+}
+
 #[embassy_executor::task]
-async fn balance(dac: DAC1, dma: DMA1, pin: PA4) {
+async fn balance(dac: DAC1, dma: DMA1, pin: PA4, pc: PB0) {
     let mut dac = DacCh1::new(dac, dma, pin);
+    let pc = gpio::Input::new(pc, Pull::Down);
     dac.enable();
-    let mut tk = Ticker::every(Duration::from_millis(500));
+    let mut tk = Ticker::every(Duration::from_micros(10));
+    dac.set(Value::Bit12Left(0));
+    let mut ps = PointerState::Below;
+    let mut pre_mid: Option<PointerState> = None;
     loop {
         tk.next().await;
-        let v = unsafe { DAC_VAL };
-        if v < 4096 {
-            dac.set(Value::Bit12Left(v as u16));
+        let mut dv = DAC_VAL.load(atomic::Ordering::SeqCst);
+        let pcv = pc.is_high();
+        if pcv {
+            match ps {
+                PointerState::Below => {
+                    dv = dv.saturating_add(1);
+                }
+                PointerState::Above => {
+                    dv = dv.saturating_sub(1);
+                }
+                PointerState::Mid => {
+                    if let Some(pre) = pre_mid.take() {
+                        match pre {
+                            PointerState::Above => ps = PointerState::Below,
+                            PointerState::Below => ps = PointerState::Above,
+                            _ => (),
+                        }
+                    }
+                }
+            };
+        } else {
+            if pre_mid.is_none() {
+                pre_mid = Some(ps);
+            }
+            ps = PointerState::Mid;
         }
+        dv = min(dv, 4095);
+        dac.set(Value::Bit12Left(dv));
+        DAC_VAL.store(dv, atomic::Ordering::SeqCst);
     }
 }
 
-static mut DAC_VAL: u32 = 0;
+static DAC_VAL: AtomicU16 = AtomicU16::new(0);
 
 #[embassy_executor::task]
 async fn hall_digital(pa1: PA1, mut prod: Producer<'static, HALL_BUFSIZE>) {
@@ -332,8 +364,9 @@ async fn listen<'d, T: 'd + embassy_stm32::usb::Instance>(
                         info!("config updated");
                     }
                     G4Command::SetDAC(dac) => {
+                        let dac = min(dac, 4095) as u16;
                         debug!("set dac to {}", dac);
-                        unsafe { DAC_VAL = dac };
+                        DAC_VAL.store(dac, atomic::Ordering::SeqCst);
                     }
                     _ => (),
                 }
