@@ -42,6 +42,7 @@ postcard = { version = "1.0.8", default-features = false, features = ["heapless"
 heapless = "0.7.0"
 atomic = "0.6.0"
 bbqueue = { version = "0.5.1", features = ["cortex-m"] }
+bittle = "0.5.7"
 
 
 [[bin]]

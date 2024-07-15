@@ -8,12 +8,12 @@ use std::collections::{BTreeMap, VecDeque};
 use std::future::pending;
 use std::iter::repeat;
 use std::mem::size_of;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 use std::{default, iter};
 
-use balance::DACChart;
+use balance::BalanceChart;
 use common::num::log2;
 use common::{
     G4Command, G4Message, G4Settings, Setting, SettingState, BUF_SIZE, FREQ_PRESETS,
@@ -26,8 +26,11 @@ use futures::{join, SinkExt, StreamExt};
 use iced::alignment::{Horizontal, Vertical};
 use iced::widget::canvas::path::lyon_path::geom::euclid::approxeq::ApproxEq;
 use iced::widget::canvas::path::lyon_path::geom::euclid::num::Round;
-use iced::widget::{self, button, column, container, row, slider, text, Column, Container, Row};
-use iced::{executor, Length, Padding};
+use iced::widget::{
+    self, button, column, container, row, slider, text, toggler, vertical_slider, Column,
+    Container, Row,
+};
+use iced::{executor, Alignment, Length, Padding, Point};
 use iced::{Application, Command, Element, Settings, Theme};
 use iced_aw::{spinner, Spinner};
 use meta::{MetaChart, ReportStat};
@@ -72,7 +75,7 @@ struct Page {
     pub hall: HallChart,
     pub freq: FreqChart,
     pub meta: MetaChart,
-    pub dac: DACChart,
+    pub ba: BalanceChart,
     pub g4_conn: ConnState,
     pub g4_sx: Option<Sender<PushToG4>>,
     pub stat: Stats,
@@ -87,7 +90,18 @@ enum Msg {
     G4Cmd(G4Command),
     Stats(Stats),
     Tick,
+    ContinualWeighing(bool),
     Null,
+    Omit(u32),
+    BaSelect(BaSelect),
+}
+
+#[derive(Debug, Clone)]
+enum BaSelect {
+    Begin(Point),
+    Move(Point),
+    End(Point),
+    Clear,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -101,6 +115,7 @@ enum PushToG4 {
     CMD(G4Command),
 }
 
+static WEIGHING: AtomicBool = AtomicBool::new(false);
 static mut G4_RX: Option<Receiver<PushToG4>> = None;
 static mut G4_CONF: Option<G4Settings> = None;
 
@@ -157,6 +172,7 @@ impl Application for Page {
 
     fn update(&mut self, msg: Self::Message) -> Command<Self::Message> {
         match msg {
+            Msg::ContinualWeighing(val) => WEIGHING.store(val, Ordering::SeqCst),
             Msg::G4Conn(conn) => self.g4_conn = conn,
             Msg::G4Data(data) => {
                 if let Some(sett) = data.state {
@@ -179,6 +195,15 @@ impl Application for Page {
                 REPORT_COUNTER.fetch_add(1, Ordering::SeqCst);
                 self.hall.data_points.push_iter_overwrite(new);
                 self.meta.reports.push_overwrite(stat);
+                if data.balance.len() > 0 {
+                    self.ba.pcoupler = data.balance.into_array().unwrap().into();
+                }
+                if data.balance_val > 0 {
+                    self.ba.measurements.push_overwrite(data.balance_val);
+                    if WEIGHING.load(Ordering::SeqCst) {
+                        let _ = self.update(Msg::G4Cmd(G4Command::Weigh));
+                    }
+                }
             }
             Msg::G4Setting(set) => {
                 if let Some(ref mut sx) = &mut self.g4_sx {
@@ -225,7 +250,7 @@ impl Application for Page {
                 let g4 = unsafe { G4_CONF.as_mut().unwrap() };
                 let rate = Duration::from_secs(1).as_micros() / g4.sampling_interval as u128;
                 fill_vec_p2(&mut hw);
-                println!("samples {}. rate {}hz", hw.len(), rate);
+                // println!("samples {}. rate {}hz", hw.len(), rate);
                 let spec = samples_fft_to_spectrum(
                     &hw[..],
                     rate.try_into().unwrap(),
@@ -263,6 +288,54 @@ impl Application for Page {
                     }
                 }
             }
+            Msg::Omit(o) => {
+                self.ba.omit = o;
+            }
+            Msg::BaSelect(sel) => {
+                self.ba.select = match sel {
+                    BaSelect::Begin(p) => {
+                        let p = Point {
+                            x: p.x as i32,
+                            y: p.y as i32,
+                        };
+                        self.ba.cur_moving = true;
+                        Some((p, p))
+                    }
+                    BaSelect::Move(p) => {
+                        let p = Point {
+                            x: p.x as i32,
+                            y: p.y as i32,
+                        };
+                        if self.ba.select.is_none() {
+                            None
+                        } else {
+                            Some((self.ba.select.unwrap().0, p))
+                        }
+                    }
+                    BaSelect::End(p) => {
+                        let p = Point {
+                            x: p.x as i32,
+                            y: p.y as i32,
+                        };
+                        self.ba.cur_moving = false;
+                        if self.ba.select.is_none() {
+                            None
+                        } else {
+                            Some((self.ba.select.unwrap().0, p))
+                        }
+                    }
+                    BaSelect::Clear => None,
+                };
+                if self.ba.select == None {
+                    self.ba.cur_moving = false;
+                }
+                if let Some((a, b)) = self.ba.select {
+                    let k = a - b;
+                    if (k.x.abs() < 10 || k.y.abs() < 10) && !self.ba.cur_moving {
+                        self.ba.select = None;
+                    }
+                }
+            }
             Msg::Null => (),
         };
         Command::none()
@@ -288,15 +361,18 @@ impl Application for Page {
                 let btn_state = button("get state")
                     .padding(10)
                     .on_press(Msg::G4Cmd(G4Command::CheckState));
-                let controls = container(btn_state)
-                    .padding(Padding {
-                        top: 10.,
-                        bottom: 0.,
-                        left: 10.,
-                        right: 0.,
-                    })
-                    .center_x()
-                    .center_y();
+                let btn_weigh = button("weigh")
+                    .padding(10)
+                    .on_press(Msg::G4Cmd(G4Command::Weigh));
+
+                let tg = toggler(
+                    Some("weighing".to_owned()),
+                    WEIGHING.load(Ordering::SeqCst),
+                    |val| Msg::ContinualWeighing(val),
+                );
+                let controls = row!(btn_state, btn_weigh)
+                    .align_items(Alignment::Center)
+                    .spacing(10);
                 let sample_int = FREQ_PRESETS.iter().position(|k| *k == g4.sampling_interval);
                 g4.sampling_window;
                 widget::row([
@@ -304,7 +380,7 @@ impl Application for Page {
                         self.hall.view(),
                         self.meta.view(),
                         self.freq.view(),
-                        self.dac.view()
+                        self.ba.view()
                     )
                     .into(),
                     column!(
@@ -328,8 +404,12 @@ impl Application for Page {
                             Msg::G4Setting(Setting::SetViewport(t, time_in_millisecs))
                         }),
                         text(format!("DAC-OUT {}", self.dac_val)),
-                        slider(0..=4095, self.dac_val, |t| {
+                        slider(0..=10, self.dac_val, |t| {
                             Msg::G4Cmd(G4Command::SetDAC(t))
+                        }),
+                        text(format!("Probe-expand {}", g4.probe_expand)),
+                        slider(0..=60, g4.probe_expand, |t| {
+                            Msg::G4Setting(Setting::ProbeExpand(t as u8))
                         }),
                         controls,
                         text(format!(
@@ -338,7 +418,8 @@ impl Application for Page {
                             self.stat.frame_per_sec,
                             g4.id,
                             ACK.load(Ordering::SeqCst)
-                        ))
+                        )),
+                        tg
                     )
                     .width(200)
                     .spacing(10)

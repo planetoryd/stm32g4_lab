@@ -13,7 +13,9 @@ pub struct G4Message {
     /// Data from hall effect sensor
     pub hall: Vec<u8, HALL_BYTES>,
     pub state: Option<G4Settings>,
-    pub ack: u64
+    pub ack: u64,
+    pub balance: Vec<u8, BALANCE_BYTES>,
+    pub balance_val: u16,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Format)]
@@ -21,7 +23,8 @@ pub enum G4Command {
     ConfigDelta(Setting),
     ConfigState(G4Settings),
     CheckState,
-    SetDAC(u32)
+    SetDAC(u32),
+    Weigh,
 }
 
 /// in us
@@ -36,6 +39,13 @@ pub struct G4Settings {
     pub min_report_interval: u64,
     /// used for ui, num of sample bytes
     pub sampling_window: u64,
+    /// initial value for balance DAC
+    pub bump: u16,
+    pub bump_wait: u16,
+    /// in millis
+    pub balance_interval: u8,
+    pub probe_expand: u8,
+    pub balance_verify: u16,
     pub id: u64,
 }
 
@@ -51,7 +61,12 @@ impl G4Settings {
             sampling_interval: 1024,
             min_report_interval: FREQ_PRESETS[4],
             sampling_window: 200,
-            id: 0
+            id: 0,
+            bump: 500,
+            bump_wait: 500,
+            balance_interval: 5,
+            balance_verify: 20,
+            probe_expand: 0,
         }
     }
 }
@@ -87,6 +102,9 @@ impl SettingState for G4Settings {
             Setting::SetSamplingIntv(t) => {
                 self.sampling_interval = t;
             }
+            Setting::ProbeExpand(v) => {
+                self.probe_expand = v;
+            }
             _ => unreachable!(),
         }
     }
@@ -101,9 +119,11 @@ pub enum Setting {
     SetViewport(u32, usize),
     SetRefreshIntv(u64),
     SetSamplingIntv(u64),
+    ProbeExpand(u8),
 }
 
 pub const HALL_BYTES: usize = 256;
+pub const BALANCE_BYTES: usize = 8;
 pub const MAX_PACKET_SIZE: usize = 4096;
 pub const BUF_SIZE: usize = MAX_PACKET_SIZE * 2;
 

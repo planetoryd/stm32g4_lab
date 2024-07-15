@@ -3,6 +3,7 @@
 #![feature(impl_trait_in_assoc_type)]
 #![feature(iter_next_chunk)]
 #![feature(iter_array_chunks)]
+#![feature(async_closure)]
 #![allow(unreachable_code)]
 #![allow(unused_mut)]
 
@@ -11,18 +12,19 @@ use core::{
     future::{pending, Pending},
     hash::{Hash, Hasher, SipHasher},
     ops::{Range, RangeFrom},
-    sync::atomic::{self, AtomicBool, AtomicU16, AtomicU32},
+    sync::atomic::{self, AtomicBool, AtomicU16, AtomicU32, Ordering::SeqCst},
 };
 
 use ::atomic::Atomic;
 use bbqueue::{BBBuffer, Consumer, Producer};
+use bittle::{BitsMut, BitsOwned};
 use common::{
     cob::{
         self,
         COBErr::{Codec, NextRead},
         COBSeek, COB,
     },
-    G4Command, G4Message, G4Settings, HALL_BYTES, MAX_PACKET_SIZE,
+    G4Command, G4Message, G4Settings, BALANCE_BYTES, HALL_BYTES, MAX_PACKET_SIZE,
 };
 use defmt::*;
 use embassy_futures::{
@@ -31,7 +33,8 @@ use embassy_futures::{
 };
 use embassy_sync::{
     blocking_mutex::{raw::CriticalSectionRawMutex, CriticalSectionMutex},
-    channel,
+    channel::{self, Channel},
+    mutex::Mutex,
     pubsub::PubSubChannel,
     signal::Signal,
 };
@@ -56,29 +59,36 @@ use embassy_stm32::{
     dac::{Dac, DacCh1, Value},
     dma::WritableRingBuffer,
     exti::ExtiInput,
+    flash::BANK1_REGION,
     gpio::{self, Level, Output, Pull, Speed},
     interrupt,
     opamp::{self, *},
-    peripherals::{DAC1, DMA1, OPAMP1, PA1, PA4, PB0, PB10, TIM2, USB},
+    pac::spi::vals::Ismod,
+    peripherals::{DAC1, DMA1, OPAMP1, PA1, PA4, PB0, PB10, RNG, TIM2, USB},
+    rng::Rng,
     time::{khz, mhz},
     timer::pwm_input::PwmInput,
     usb::Driver,
     Config,
 };
-use embassy_stm32::{peripherals, usb};
+use embassy_stm32::{peripherals, rng, usb};
 use embassy_time::{Delay, Duration, Instant, Ticker, Timer};
 
 bind_interrupts!(
     struct Irqs {
         USB_LP => usb::InterruptHandler<peripherals::USB>;
+        RNG => rng::InterruptHandler<peripherals::RNG>;
     }
 );
 
 type HallData = u8;
 
+struct Notif;
+
 static CONF: Atomic<G4Settings> = Atomic::new(G4Settings::new());
 static CONF_NOTIF: PubSubChannel<CriticalSectionRawMutex, (), 4, 2, 1> = PubSubChannel::new();
 static CHECK_STATE: AtomicBool = AtomicBool::new(false);
+static WEIGH_NOTIF: Channel<CriticalSectionRawMutex, Notif, 1> = Channel::new();
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -134,7 +144,7 @@ async fn main(spawner: Spawner) {
         &mut [], // no msos descriptors
         &mut control_buf,
     );
-
+    let rngen = Rng::new(p.RNG, Irqs);
     let class = embassy_usb::class::cdc_acm::CdcAcmClass::new(&mut builder, &mut state, 64);
     let (mut sx, mut rx) = class.split();
     info!("usb max packet size, {}", sx.max_packet_size());
@@ -162,7 +172,7 @@ async fn main(spawner: Spawner) {
         }
     };
 
-    unwrap!(spawner.spawn(balance(p.DAC1, p.DMA1, p.PA4, p.PB0)));
+    unwrap!(spawner.spawn(balance(p.DAC1, p.DMA1, p.PA4, p.PB0, rngen)));
     unwrap!(spawner.spawn(hall_digital(p.PA1, prod)));
     // spawner
     //     .spawn(hall_watcher(adc, p.OPAMP1, p.PA1, vrefint, temp))
@@ -217,49 +227,86 @@ enum PointerState {
 }
 
 #[embassy_executor::task]
-async fn balance(dac: DAC1, dma: DMA1, pin: PA4, pc: PB0) {
+async fn balance(dac: DAC1, dma: DMA1, pin: PA4, pc: PB0, rng: Rng<'static, peripherals::RNG>) {
     let mut dac = DacCh1::new(dac, dma, pin);
     let pc = gpio::Input::new(pc, Pull::Down);
     dac.enable();
-    let mut tk = Ticker::every(Duration::from_micros(10));
     dac.set(Value::Bit12Left(0));
-    let mut ps = PointerState::Below;
-    let mut pre_mid: Option<PointerState> = None;
+    let max_dac: u16 = 4095;
     loop {
-        tk.next().await;
-        let mut dv = DAC_VAL.load(atomic::Ordering::SeqCst);
-        let pcv = pc.is_high();
-        if pcv {
-            match ps {
-                PointerState::Below => {
-                    dv = dv.saturating_add(1);
-                }
-                PointerState::Above => {
-                    dv = dv.saturating_sub(1);
-                }
-                PointerState::Mid => {
-                    if let Some(pre) = pre_mid.take() {
-                        match pre {
-                            PointerState::Above => ps = PointerState::Below,
-                            PointerState::Below => ps = PointerState::Above,
-                            _ => (),
-                        }
-                    }
-                }
-            };
-        } else {
-            if pre_mid.is_none() {
-                pre_mid = Some(ps);
+        WEIGH_NOTIF.receive().await;
+        let conf = CONF.load(SeqCst);
+        dac.set(Value::Bit12Left(conf.bump as u16));
+        Timer::after_millis(conf.bump_wait as u64).await;
+        let mut tk = Ticker::every(Duration::from_millis(conf.balance_interval as u64));
+        for step in conf.bump as u16..max_dac {
+            dac.set(Value::Bit12Left(step));
+            tk.next().await;
+            if pc.is_low() {
+                break;
             }
-            ps = PointerState::Mid;
         }
-        dv = min(dv, 4095);
-        dac.set(Value::Bit12Left(dv));
-        DAC_VAL.store(dv, atomic::Ordering::SeqCst);
+        let mut mean = dac.read();
+        info!("approx1={}", mean);
+        let mut approx = async |num: u32, delta: u16, time_init: u64, time: u64| {
+            let low = mean - delta;
+            let up = mean + delta;
+            dac.set(Value::Bit12Left(low));
+            Timer::after_millis(time_init).await;
+            for step in low..up {
+                dac.set(Value::Bit12Left(step));
+                Timer::after_millis(time).await;
+                if pc.is_low() {
+                    mean = dac.read();
+                    info!("approx{}={}", num, mean);
+                    break;
+                }
+            }
+        };
+        approx(2, 10, 300, 100).await;
+        approx(3, 3, 500, 800).await;
+        BALANCE_MEAN.store(mean, SeqCst);
+
+        if conf.probe_expand > 0 {
+            // this is used for verification
+            let mut vec = [false; BALANCE_BYTES * 8];
+            let half = vec.len() / 2;
+            let mut tk = Ticker::every(Duration::from_millis(conf.balance_verify as u64));
+            info!(
+                "balance, mean {}, range {}",
+                mean,
+                conf.probe_expand as usize * half
+            );
+
+            for di in (0usize..half as usize).into_iter().rev() {
+                let mut fill = async |val: &mut bool, dac_val: u16| {
+                    dac.set(Value::Bit12Left(dac_val));
+                    tk.next().await;
+                    *val = pc.is_high();
+                };
+                let di2 = di as u16 * conf.probe_expand as u16;
+                (fill)(&mut vec[half as usize - 1 - di], mean - di2).await;
+                (fill)(&mut vec[half as usize + di], mean + di2).await;
+            }
+            for (ix, val) in vec.into_iter().enumerate() {
+                unsafe {
+                    if !val {
+                        BALANCE.clear_bit(ix as u32)
+                    } else {
+                        BALANCE.set_bit(ix as u32)
+                    }
+                };
+            }
+            BALANCE_DATA.store(true, SeqCst);
+        }
+        info!("weighing finished, {}", dac.read());
     }
 }
 
-static DAC_VAL: AtomicU16 = AtomicU16::new(0);
+static mut DAC_VAL: u16 = 0;
+static mut BALANCE: bittle::Set<[u8; BALANCE_BYTES]> = bittle::Set::ONES;
+static BALANCE_DATA: AtomicBool = AtomicBool::new(false);
+static BALANCE_MEAN: AtomicU16 = AtomicU16::new(0);
 
 #[embassy_executor::task]
 async fn hall_digital(pa1: PA1, mut prod: Producer<'static, HALL_BUFSIZE>) {
@@ -276,7 +323,7 @@ async fn hall_digital(pa1: PA1, mut prod: Producer<'static, HALL_BUFSIZE>) {
     }
     let mut confn = CONF_NOTIF.subscriber().unwrap();
     loop {
-        let conf = CONF.load(atomic::Ordering::SeqCst);
+        let conf = CONF.load(SeqCst);
         let mut tker = Ticker::every(Duration::from_micros(conf.sampling_interval));
         if let Ok(mut buf) = prod.grant_exact(1) {
             let mut i = 0;
@@ -357,16 +404,20 @@ async fn listen<'d, T: 'd + embassy_stm32::usb::Instance>(
                 debug!("{:?}", &msg);
                 match msg {
                     G4Command::CheckState => {
-                        CHECK_STATE.store(true, atomic::Ordering::SeqCst);
+                        CHECK_STATE.store(true, SeqCst);
                     }
                     G4Command::ConfigState(state) => {
-                        CONF.store(state, atomic::Ordering::SeqCst);
+                        CONF.store(state, SeqCst);
                         info!("config updated");
                     }
                     G4Command::SetDAC(dac) => {
-                        let dac = min(dac, 4095) as u16;
                         debug!("set dac to {}", dac);
-                        DAC_VAL.store(dac, atomic::Ordering::SeqCst);
+                        unsafe {
+                            DAC_VAL = dac as u16;
+                        }
+                    }
+                    G4Command::Weigh => {
+                        WEIGH_NOTIF.send(Notif).await;
                     }
                     _ => (),
                 }
@@ -405,7 +456,7 @@ async fn report<'d, T: 'd + embassy_stm32::usb::Instance>(
     loop {
         let e = embassy_futures::select::select(tkreload.next(), async {
             // debug!("reloading conf");
-            let conf: G4Settings = CONF.load(atomic::Ordering::SeqCst);
+            let conf: G4Settings = CONF.load(SeqCst);
 
             let mut tkrp = Ticker::every(Duration::from_micros(conf.min_report_interval));
             loop {
@@ -417,19 +468,26 @@ async fn report<'d, T: 'd + embassy_stm32::usb::Instance>(
                 } else {
                     hall = None;
                 };
-                let send_state = CHECK_STATE.fetch_update(
-                    atomic::Ordering::SeqCst,
-                    atomic::Ordering::SeqCst,
-                    |_| Some(false),
-                );
+                let send_state = CHECK_STATE.fetch_update(SeqCst, SeqCst, |_| Some(false));
                 let send_state = match send_state {
                     Ok(k) => k,
                     Err(k) => k,
                 };
+                let bval = BALANCE_MEAN.load(SeqCst);
+                if bval > 0 {
+                    BALANCE_MEAN.store(0, SeqCst);
+                }
                 let reply = G4Message {
                     hall: hall.unwrap_or_default(),
                     state: if send_state { Some(conf) } else { None },
                     ack: conf.id,
+                    balance: if BALANCE_DATA.load(SeqCst) {
+                        BALANCE_DATA.store(false, SeqCst);
+                        Vec::from_slice(&unsafe { BALANCE.into_bits() }).unwrap()
+                    } else {
+                        Vec::new()
+                    },
+                    balance_val: bval,
                 };
                 let rx: Result<heapless::Vec<u8, 1024>, postcard::Error> =
                     postcard::to_vec_cobs(&reply);

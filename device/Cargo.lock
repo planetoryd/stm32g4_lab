@@ -91,6 +91,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b048fb63fd8b5923fc5aa7b340d8e156aec7ec02f0c78fa8a6ddc2613f6f71de"
 
 [[package]]
+name = "bittle"
+version = "0.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4650bc513f4078b7ad8dfbbca0455a1ee6cc1325dc21b5995340a7ab3d80ac5b"
+
+[[package]]
 name = "bytemuck"
 version = "1.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -661,6 +667,7 @@ version = "0.1.0"
 dependencies = [
  "atomic",
  "bbqueue",
+ "bittle",
  "common",
  "cortex-m 0.7.7",
  "cortex-m-rt",
