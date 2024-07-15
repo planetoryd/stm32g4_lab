@@ -13,7 +13,7 @@ use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 use std::{default, iter};
 
-use balance::BalanceChart;
+use balance::{BalanceChart, SELECTED_POINTS};
 use common::num::log2;
 use common::{
     G4Command, G4Message, G4Settings, Setting, SettingState, BUF_SIZE, FREQ_PRESETS,
@@ -318,6 +318,7 @@ impl Application for Page {
                             y: p.y as i32,
                         };
                         self.ba.cur_moving = false;
+                        let sp = SELECTED_POINTS.blocking_read();
                         if self.ba.select.is_none() {
                             None
                         } else {

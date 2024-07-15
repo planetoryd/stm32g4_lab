@@ -26,12 +26,10 @@ pub struct FreqChart {
 impl FreqChart {
     pub fn view(&self) -> Element<Msg> {
         let chart = ChartWidget::new(self);
-        let table = iced_table::table(Id::unique(), Id::unique(), &self.cols, &self.top, |s| {
-            Msg::Null
-        });
-        row!(chart, table)
-            .align_items(iced::Alignment::Center)
-            .into()
+        // let table = iced_table::table(Id::unique(), Id::unique(), &self.cols, &self.top, |s| {
+        //     Msg::Null
+        // });
+        row!(chart).align_items(iced::Alignment::Center).into()
     }
 }
 

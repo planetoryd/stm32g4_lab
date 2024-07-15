@@ -1,11 +1,20 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, fmt::format};
 
 use crate::*;
 use bittle::prelude::*;
 use common::BALANCE_BYTES;
-use iced::{advanced::graphics::core::event, mouse, Point, Size, Vector};
+use iced::{
+    advanced::graphics::{core::event, text::cosmic_text::rustybuzz::ttf_parser::Width},
+    mouse,
+    theme::{self, Container},
+    Point, Size, Vector,
+};
+use iced_aw::{
+    floating_element::{self, Anchor},
+    style::colors,
+};
 use plotters::{coord::ReverseCoordTranslate, element::PointCollection, prelude::*};
-use widget::canvas::Event;
+use widget::{canvas::Event, themer, Button};
 
 pub struct BalanceChart {
     pub measurements: HeapRb<u16>,
@@ -15,8 +24,9 @@ pub struct BalanceChart {
     pub omit: u32,
     pub select: Option<(Point<i32>, Point<i32>)>,
     pub cur_moving: bool,
-    pub selected: HashSet<Point>,
 }
+
+pub static SELECTED_POINTS: RwLock<Option<HashSet<(usize, u32)>>> = RwLock::const_new(None);
 
 impl Chart<Msg> for BalanceChart {
     type State = ();
@@ -100,6 +110,8 @@ impl Chart<Msg> for BalanceChart {
         } else {
             None
         };
+        let mut sp = SELECTED_POINTS.blocking_write();
+        let spts = sp.insert(Default::default());
         let it: Vec<_> = vals_om
             .into_iter()
             .map(|(x, y)| {
@@ -107,6 +119,7 @@ impl Chart<Msg> for BalanceChart {
                     let tx = cx.as_coord_spec().translate(&(x, y));
                     if let Some(area) = area {
                         if area.contains(Point::new(tx.0 as f32, tx.1 as f32)) {
+                            spts.insert((x, y));
                             style::colors::BLUE.mix(0.8).filled().stroke_width(2)
                         } else {
                             style::colors::BLUE.mix(0.8).stroke_width(2)
@@ -201,7 +214,6 @@ impl Default for BalanceChart {
             omit: 0,
             select: None,
             cur_moving: false,
-            selected: HashSet::with_capacity(64),
         }
     }
 }
@@ -213,12 +225,45 @@ impl BalanceChart {
             self.omit,
             |v| Msg::Omit(v),
         );
+        let sel = SELECTED_POINTS.blocking_read();
+        let tx = if let Some(ref inn) = *sel {
+            if inn.len() > 0 {
+                let avg = inn.iter().map(|x| x.1 as usize).sum::<usize>() / inn.len();
+                format!("avg={}", avg)
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+        let flted = container(
+            row!(
+                column([text(tx).into()]).padding(5),
+                column([
+                    button("1mg")
+                        .on_press(Msg::Null)
+                        .width(Length::Fixed(60.))
+                        .style(theme::Button::Secondary)
+                        .into(),
+                    button("10mg")
+                        .on_press(Msg::Null)
+                        .width(Length::Fixed(60.))
+                        .style(theme::Button::Secondary)
+                        .into()
+                ])
+                .spacing(5),
+            )
+            .spacing(5),
+        )
+        .padding(20);
         let sld = container(sld).padding(Padding {
             left: 0.,
             right: 0.,
             top: 20.,
             bottom: 20.,
         });
-        row!(ChartWidget::new(self), sld).spacing(0).into()
+        let flt =
+            iced_aw::floating_element(ChartWidget::new(self), flted).anchor(Anchor::NorthEast);
+        row!(flt, sld).spacing(0).into()
     }
 }
