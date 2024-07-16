@@ -417,7 +417,7 @@ async fn listen<'d, T: 'd + embassy_stm32::usb::Instance>(
                         }
                     }
                     G4Command::Weigh => {
-                        WEIGH_NOTIF.send(Notif).await;
+                        let _ = WEIGH_NOTIF.try_send(Notif);
                     }
                     _ => (),
                 }

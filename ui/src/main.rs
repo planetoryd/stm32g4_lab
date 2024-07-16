@@ -19,9 +19,11 @@ use common::{
     G4Command, G4Message, G4Settings, Setting, SettingState, BUF_SIZE, FREQ_PRESETS,
     MAX_PACKET_SIZE,
 };
+use fraction::Fraction;
 use freq::{Col, FreqChart};
 use futures::channel::mpsc::{self, Receiver, Sender};
 use futures::lock::Mutex;
+use futures::stream::iter;
 use futures::{join, SinkExt, StreamExt};
 use iced::alignment::{Horizontal, Vertical};
 use iced::widget::canvas::path::lyon_path::geom::euclid::approxeq::ApproxEq;
@@ -94,13 +96,20 @@ enum Msg {
     Null,
     Omit(u32),
     BaSelect(BaSelect),
+    RefWeight(RefWeight),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Ord)]
+enum RefWeight {
+    Num(u32),
+    Origin,
 }
 
 #[derive(Debug, Clone)]
 enum BaSelect {
     Begin(Point),
     Move(Point),
-    End(Point),
+    End(Option<Point>),
     Clear,
 }
 
@@ -291,6 +300,19 @@ impl Application for Page {
             Msg::Omit(o) => {
                 self.ba.omit = o;
             }
+            Msg::RefWeight(val) => {
+                if let Some(ref sel) = *SELECTED_POINTS.blocking_read() {
+                    let sum = sel.iter().map(|x| x.1).sum::<u32>();
+                    if sel.len() > 0 {
+                        let fr = Fraction::from(sum) / sel.len();
+                        self.ba.refweight.insert(val, fr);
+                    } else {
+                        self.ba.refweight.remove(&val);
+                    }
+                } else {
+                    self.ba.refweight.remove(&val);
+                }
+            }
             Msg::BaSelect(sel) => {
                 self.ba.select = match sel {
                     BaSelect::Begin(p) => {
@@ -313,16 +335,19 @@ impl Application for Page {
                         }
                     }
                     BaSelect::End(p) => {
-                        let p = Point {
-                            x: p.x as i32,
-                            y: p.y as i32,
-                        };
                         self.ba.cur_moving = false;
-                        let sp = SELECTED_POINTS.blocking_read();
-                        if self.ba.select.is_none() {
-                            None
+                        if let Some(p) = p {
+                            let p = Point {
+                                x: p.x as i32,
+                                y: p.y as i32,
+                            };
+                            if self.ba.select.is_none() {
+                                None
+                            } else {
+                                Some((self.ba.select.unwrap().0, p))
+                            }
                         } else {
-                            Some((self.ba.select.unwrap().0, p))
+                            self.ba.select
                         }
                     }
                     BaSelect::Clear => None,

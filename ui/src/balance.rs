@@ -3,6 +3,7 @@ use std::{collections::HashSet, fmt::format};
 use crate::*;
 use bittle::prelude::*;
 use common::BALANCE_BYTES;
+use fraction::Fraction;
 use iced::{
     advanced::graphics::{core::event, text::cosmic_text::rustybuzz::ttf_parser::Width},
     mouse,
@@ -24,9 +25,18 @@ pub struct BalanceChart {
     pub omit: u32,
     pub select: Option<(Point<i32>, Point<i32>)>,
     pub cur_moving: bool,
+    /// nominal weight in mg to val
+    pub refweight: BTreeMap<RefWeight, Fraction>,
 }
 
 pub static SELECTED_POINTS: RwLock<Option<HashSet<(usize, u32)>>> = RwLock::const_new(None);
+
+#[test]
+fn frint() {
+    let frac = Fraction::new(5u32, 2u32);
+    let k = frac.floor();
+    dbg!(&k);
+}
 
 impl Chart<Msg> for BalanceChart {
     type State = ();
@@ -66,20 +76,24 @@ impl Chart<Msg> for BalanceChart {
         vals_om.sort_by_key(|(x, y)| *x);
         let mut cb = ChartBuilder::on(&root);
 
-        let ymin: Option<_> = vals_om.iter().min_by_key(|x| x.1);
-        let ymax = vals_om.iter().max_by_key(|x| x.1);
+        let vymin: Option<_> = vals_om.iter().min_by_key(|x| x.1).map(|x| x.1);
+        let vymax = vals_om.iter().max_by_key(|x| x.1).map(|x| x.1);
+        let refmin = self
+            .refweight
+            .get(&RefWeight::Num(0))
+            .map(|x| *x.floor().numer().unwrap() as u32);
+        let refmax = self
+            .refweight
+            .get(&RefWeight::Num(10))
+            .map(|x| *x.ceil().numer().unwrap() as u32);
+        let ymin = refmin.or(vymin).or(Some(1000)).unwrap();
+        let ymax = refmax.or(vymax).or(Some(4095)).unwrap();
+
         let mut cx = cb
             .x_label_area_size(20)
             .y_label_area_size(30)
             .margin(10)
-            .build_cartesian_2d(
-                0usize..self.measurements.capacity().get(),
-                if let Some(x) = ymin { x.1 } else { 2000u32 }..if let Some(x) = ymax {
-                    x.1
-                } else {
-                    3000
-                },
-            )
+            .build_cartesian_2d(0usize..self.measurements.capacity().get(), ymin..ymax)
             .unwrap();
         cx.configure_mesh().draw().unwrap();
         cx.draw_series(LineSeries::new(
@@ -173,7 +187,7 @@ impl Chart<Msg> for BalanceChart {
                             if self.cur_moving {
                                 return (
                                     iced::event::Status::Captured,
-                                    Some(Msg::BaSelect(BaSelect::End(c))),
+                                    Some(Msg::BaSelect(BaSelect::End(Some(c)))),
                                 );
                             }
                         }
@@ -195,7 +209,7 @@ impl Chart<Msg> for BalanceChart {
             if self.cur_moving {
                 return (
                     iced::event::Status::Ignored,
-                    Some(Msg::BaSelect(BaSelect::Clear)),
+                    Some(Msg::BaSelect(BaSelect::End(None))),
                 );
             }
         }
@@ -207,9 +221,10 @@ impl Default for BalanceChart {
     fn default() -> Self {
         let num = 40;
         let mut measurements = HeapRb::new(num);
-        measurements.push_slice(&[2500, 2220, 2000, 2200, 2205, 1500, 3000]);
+        // measurements.push_slice(&[2500, 2220, 2000, 2200, 2205, 1500, 3000]);
         Self {
             measurements,
+            refweight: Default::default(),
             pcoupler: Default::default(),
             omit: 0,
             select: None,
@@ -236,19 +251,46 @@ impl BalanceChart {
         } else {
             String::new()
         };
+
         let flted = container(
             row!(
                 column([text(tx).into()]).padding(5),
                 column([
-                    button("1mg")
-                        .on_press(Msg::Null)
+                    button("0mg")
+                        .on_press(Msg::RefWeight(RefWeight::Num(0)))
                         .width(Length::Fixed(60.))
-                        .style(theme::Button::Secondary)
+                        .style(if self.refweight.contains_key(&RefWeight::Num(0)) {
+                            theme::Button::Positive
+                        } else {
+                            theme::Button::Secondary
+                        })
+                        .into(),
+                    button("1mg")
+                        .on_press(Msg::RefWeight(RefWeight::Num(1)))
+                        .width(Length::Fixed(60.))
+                        .style(if self.refweight.contains_key(&RefWeight::Num(1)) {
+                            theme::Button::Positive
+                        } else {
+                            theme::Button::Secondary
+                        })
                         .into(),
                     button("10mg")
-                        .on_press(Msg::Null)
+                        .on_press(Msg::RefWeight(RefWeight::Num(10)))
                         .width(Length::Fixed(60.))
-                        .style(theme::Button::Secondary)
+                        .style(if self.refweight.contains_key(&RefWeight::Num(10)) {
+                            theme::Button::Positive
+                        } else {
+                            theme::Button::Secondary
+                        })
+                        .into(),
+                    button("offset")
+                        .on_press(Msg::RefWeight(RefWeight::Origin))
+                        .width(Length::Fixed(60.))
+                        .style(if self.refweight.contains_key(&RefWeight::Origin) {
+                            theme::Button::Positive
+                        } else {
+                            theme::Button::Secondary
+                        })
                         .into()
                 ])
                 .spacing(5),

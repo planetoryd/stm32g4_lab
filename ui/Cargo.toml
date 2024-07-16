@@ -23,3 +23,4 @@ iced_table = { version = "0.12", path = "./iced_table" }
 rust_decimal = "1.35.0"
 rust_decimal_macros = "1.35.0"
 bittle = "0.5.7"
+fraction = "0.15.3"
