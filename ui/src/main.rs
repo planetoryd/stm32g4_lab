@@ -13,13 +13,13 @@ use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 use std::{default, iter};
 
-use balance::{BalanceChart, SELECTED_POINTS};
+use balance::{BalanceChart, LINREG, SELECTED_POINTS};
 use common::num::log2;
 use common::{
     G4Command, G4Message, G4Settings, Setting, SettingState, BUF_SIZE, FREQ_PRESETS,
     MAX_PACKET_SIZE,
 };
-use fraction::Fraction;
+use fraction::{Fraction, GenericDecimal, ToPrimitive};
 use freq::{Col, FreqChart};
 use futures::channel::mpsc::{self, Receiver, Sender};
 use futures::lock::Mutex;
@@ -35,12 +35,15 @@ use iced::widget::{
 use iced::{executor, Alignment, Length, Padding, Point};
 use iced::{Application, Command, Element, Settings, Theme};
 use iced_aw::{spinner, Spinner};
+use linfa::Dataset;
 use meta::{MetaChart, ReportStat};
 use misc::fill_vec_p2;
+use ndarray::{arr1, Array1, Array2, IndexLonger, SliceInfo};
 use plotters::style;
 use plotters_iced::{Chart, ChartWidget};
 use ringbuf::traits::{Consumer, Observer, Producer, RingBuffer};
 use ringbuf::{HeapRb, LocalRb};
+use rust_decimal::Decimal;
 use serialport::{SerialPort, SerialPortType};
 use spectrum_analyzer::windows::hann_window;
 use spectrum_analyzer::{samples_fft_to_spectrum, Frequency};
@@ -58,6 +61,9 @@ mod balance;
 mod freq;
 mod meta;
 mod misc;
+
+#[cfg(test)]
+mod sandbox;
 
 macro forever() {
     pending::<()>()
@@ -312,6 +318,29 @@ impl Application for Page {
                 } else {
                     self.ba.refweight.remove(&val);
                 }
+                use linfa::prelude::*;
+                use linfa::traits::Fit;
+                use linfa_linear::LinearRegression;
+                use ndarray::prelude::*;
+                let lin = LinearRegression::new();
+                let mut a2 = Array2::zeros((3, 1));
+                let mut col = a2.column_mut(0);
+                let mut target = vec![];
+                for (i, (w, v)) in self.ba.refweight.iter().enumerate() {
+                    if let RefWeight::Num(n) = w {
+                        let k = GenericDecimal::from_fraction(v.clone()).set_precision(2usize);
+                        let dec: f64 = k.try_into().unwrap();
+                        col[i] = dec;
+                        target.push(*n as f64);
+                    }
+                }
+                let sliced = a2.slice(s![..self.ba.refweight.len(), ..]).to_owned();
+                let target = Array1::from_vec(target);
+                let data = Dataset::new(sliced, target);
+                dbg!(&data);
+                let rx = lin.fit(&data).unwrap();
+                let mut model = LINREG.blocking_write();
+                *model = Some(rx);
             }
             Msg::BaSelect(sel) => {
                 self.ba.select = match sel {

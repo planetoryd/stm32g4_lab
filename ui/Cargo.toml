@@ -23,4 +23,7 @@ iced_table = { version = "0.12", path = "./iced_table" }
 rust_decimal = "1.35.0"
 rust_decimal_macros = "1.35.0"
 bittle = "0.5.7"
-fraction = "0.15.3"
+fraction = { version = "0.15.3", features = ["with-approx"] }
+linfa = "0.7.0"
+linfa-linear = "0.7.0"
+ndarray = "0.15.6"

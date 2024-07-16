@@ -2,18 +2,21 @@ use std::{collections::HashSet, fmt::format};
 
 use crate::*;
 use bittle::prelude::*;
+use button::Appearance;
 use common::BALANCE_BYTES;
 use fraction::Fraction;
 use iced::{
-    advanced::graphics::{core::event, text::cosmic_text::rustybuzz::ttf_parser::Width},
     mouse,
     theme::{self, Container},
     Point, Size, Vector,
 };
 use iced_aw::{
+    drop_down::Offset,
     floating_element::{self, Anchor},
     style::colors,
 };
+use linfa_linear::FittedLinearRegression;
+use ndarray::arr2;
 use plotters::{coord::ReverseCoordTranslate, element::PointCollection, prelude::*};
 use widget::{canvas::Event, themer, Button};
 
@@ -30,13 +33,7 @@ pub struct BalanceChart {
 }
 
 pub static SELECTED_POINTS: RwLock<Option<HashSet<(usize, u32)>>> = RwLock::const_new(None);
-
-#[test]
-fn frint() {
-    let frac = Fraction::new(5u32, 2u32);
-    let k = frac.floor();
-    dbg!(&k);
-}
+pub static LINREG: RwLock<Option<FittedLinearRegression<f64>>> = RwLock::const_new(None);
 
 impl Chart<Msg> for BalanceChart {
     type State = ();
@@ -48,6 +45,7 @@ impl Chart<Msg> for BalanceChart {
         root: DrawingArea<DB, plotters::coord::Shift>,
     ) {
         let mut cb = ChartBuilder::on(&root);
+
         let mut cx = cb
             .x_label_area_size(20)
             .y_label_area_size(30)
@@ -78,24 +76,26 @@ impl Chart<Msg> for BalanceChart {
 
         let vymin: Option<_> = vals_om.iter().min_by_key(|x| x.1).map(|x| x.1);
         let vymax = vals_om.iter().max_by_key(|x| x.1).map(|x| x.1);
-        let refmin = self
-            .refweight
-            .get(&RefWeight::Num(0))
-            .map(|x| *x.floor().numer().unwrap() as u32);
-        let refmax = self
-            .refweight
-            .get(&RefWeight::Num(10))
-            .map(|x| *x.ceil().numer().unwrap() as u32);
-        let ymin = refmin.or(vymin).or(Some(1000)).unwrap();
-        let ymax = refmax.or(vymax).or(Some(4095)).unwrap();
-
+        let getref = |nomimal: u32| {
+            (
+                self.refweight
+                    .get(&RefWeight::Num(0))
+                    .map(|x| *x.floor().numer().unwrap() as u32),
+                nomimal,
+            )
+        };
+        let (refmin, nom_min) = getref(1);
+        let (refmax, nom_max) = getref(10);
+        let ymin = refmin.or(vymin).map(|x| x - 5).or(Some(1000)).unwrap();
+        let ymax = refmax.or(vymax).map(|x| x + 5).or(Some(4095)).unwrap();
+        let xcord = 0usize..self.measurements.capacity().get();
         let mut cx = cb
             .x_label_area_size(20)
             .y_label_area_size(30)
             .margin(10)
-            .build_cartesian_2d(0usize..self.measurements.capacity().get(), ymin..ymax)
+            .build_cartesian_2d(xcord.clone(), ymin..ymax)
             .unwrap();
-        cx.configure_mesh().draw().unwrap();
+
         cx.draw_series(LineSeries::new(
             vals_om.clone(),
             style::colors::BLUE.mix(0.4).filled().stroke_width(6),
@@ -145,6 +145,45 @@ impl Chart<Msg> for BalanceChart {
             })
             .collect();
         cx.draw_series(it).unwrap();
+        use linfa::prelude::*;
+        use linfa::traits::Fit;
+        use linfa_linear::LinearRegression;
+        use ndarray::prelude::*;
+
+        let pred = LINREG.blocking_read();
+        if let Some(pred) = &*pred {
+            let fmt = |k: &u32| {
+                let recs = arr2(&[[*k as f64]]);
+                let mut res = arr1(&[0.]);
+                pred.predict_inplace(&recs, &mut res);
+                format!("{:.1}", res[0])
+            };
+            cx.configure_mesh().y_label_formatter(&fmt).draw().unwrap();
+        } else {
+            cx.configure_mesh().draw().unwrap();
+        }
+
+        drop(sp);
+
+        let sel = SELECTED_POINTS.blocking_read();
+        let df = "avg=".to_owned();
+        let tx = if let Some(ref inn) = *sel {
+            if inn.len() > 0 {
+                let avg = inn.iter().map(|x| x.1 as usize).sum::<usize>() / inn.len();
+                format!("avg={}", avg)
+            } else {
+                df
+            }
+        } else {
+            df
+        };
+
+        root.draw_text(
+            &tx,
+            &style::BLACK.mix(0.9).into_text_style(&root),
+            (160, 20),
+        )
+        .unwrap();
     }
     fn mouse_interaction(
         &self,
@@ -165,6 +204,19 @@ impl Chart<Msg> for BalanceChart {
         bounds: iced::Rectangle,
         cursor: mouse::Cursor,
     ) -> (iced::event::Status, Option<Msg>) {
+        if let Event::Mouse(mouse::Event::CursorMoved { position: pos }) = event {
+            let cur = mouse::Cursor::Available(pos);
+            let pos = cur.position_in(bounds);
+            if let Some(c) = pos {
+                if self.cur_moving {
+                    return (
+                        iced::event::Status::Captured,
+                        Some(Msg::BaSelect(BaSelect::Move(pos.unwrap()))),
+                    );
+                }
+            }
+        }
+
         if let Some(c) = cursor.position_in(bounds) {
             match event {
                 Event::Mouse(mouse::Event::ButtonPressed(bp)) => match bp {
@@ -221,7 +273,7 @@ impl Default for BalanceChart {
     fn default() -> Self {
         let num = 40;
         let mut measurements = HeapRb::new(num);
-        // measurements.push_slice(&[2500, 2220, 2000, 2200, 2205, 1500, 3000]);
+        measurements.push_slice(&[2500, 2220, 2000, 2200, 2205, 1500, 3000]);
         Self {
             measurements,
             refweight: Default::default(),
@@ -233,6 +285,43 @@ impl Default for BalanceChart {
     }
 }
 
+struct OverBtn(bool);
+
+impl button::StyleSheet for OverBtn {
+    type Style = iced::Theme;
+    fn active(&self, style: &Self::Style) -> button::Appearance {
+        let mut c = if self.0 {
+            colors::OLIVE
+        } else {
+            colors::DARK_BLUE
+        };
+        let mut t = colors::WHITE;
+        c.a = 0.3;
+        t.a = 0.9;
+        Appearance {
+            background: Some(c.into()),
+            text_color: t,
+            ..Default::default()
+        }
+    }
+    fn hovered(&self, style: &Self::Style) -> Appearance {
+        let mut c = colors::OLIVE;
+        c.a = 0.6;
+        Appearance {
+            background: Some(c.into()),
+            ..self.active(style)
+        }
+    }
+    fn pressed(&self, style: &Self::Style) -> Appearance {
+        let mut c = colors::OLIVE;
+        c.a = 0.8;
+        Appearance {
+            background: Some(c.into()),
+            ..self.active(style)
+        }
+    }
+}
+
 impl BalanceChart {
     pub fn view(&self) -> Element<'_, Msg> {
         let sld = vertical_slider(
@@ -240,72 +329,80 @@ impl BalanceChart {
             self.omit,
             |v| Msg::Omit(v),
         );
-        let sel = SELECTED_POINTS.blocking_read();
-        let tx = if let Some(ref inn) = *sel {
-            if inn.len() > 0 {
-                let avg = inn.iter().map(|x| x.1 as usize).sum::<usize>() / inn.len();
-                format!("avg={}", avg)
-            } else {
-                String::new()
-            }
-        } else {
-            String::new()
-        };
 
-        let flted = container(
-            row!(
-                column([text(tx).into()]).padding(5),
-                column([
-                    button("0mg")
-                        .on_press(Msg::RefWeight(RefWeight::Num(0)))
-                        .width(Length::Fixed(60.))
-                        .style(if self.refweight.contains_key(&RefWeight::Num(0)) {
-                            theme::Button::Positive
-                        } else {
-                            theme::Button::Secondary
-                        })
-                        .into(),
-                    button("1mg")
-                        .on_press(Msg::RefWeight(RefWeight::Num(1)))
-                        .width(Length::Fixed(60.))
-                        .style(if self.refweight.contains_key(&RefWeight::Num(1)) {
-                            theme::Button::Positive
-                        } else {
-                            theme::Button::Secondary
-                        })
-                        .into(),
-                    button("10mg")
-                        .on_press(Msg::RefWeight(RefWeight::Num(10)))
-                        .width(Length::Fixed(60.))
-                        .style(if self.refweight.contains_key(&RefWeight::Num(10)) {
-                            theme::Button::Positive
-                        } else {
-                            theme::Button::Secondary
-                        })
-                        .into(),
-                    button("offset")
-                        .on_press(Msg::RefWeight(RefWeight::Origin))
-                        .width(Length::Fixed(60.))
-                        .style(if self.refweight.contains_key(&RefWeight::Origin) {
-                            theme::Button::Positive
-                        } else {
-                            theme::Button::Secondary
-                        })
-                        .into()
-                ])
-                .spacing(5),
-            )
-            .spacing(5),
-        )
-        .padding(20);
+        let btn_wd = 100.;
+        let flted = row!(column([
+            button(text(format!(
+                "0mg={}",
+                &self
+                    .refweight
+                    .get(&RefWeight::Num(0))
+                    .map(|x| (x.floor()).numer().map(|x| *x))
+                    .map_or("".to_owned(), |x| x.unwrap().to_string())
+            )))
+            .on_press(Msg::RefWeight(RefWeight::Num(0)))
+            .width(Length::Fixed(btn_wd))
+            .style(theme::Button::custom(OverBtn(
+                self.refweight.contains_key(&RefWeight::Num(0))
+            )))
+            .into(),
+            button(text(format!(
+                "1mg={}",
+                &self
+                    .refweight
+                    .get(&RefWeight::Num(1))
+                    .map(|x| (x.ceil()).numer().map(|x| *x))
+                    .map_or("".to_owned(), |x| x.unwrap().to_string())
+            )))
+            .on_press(Msg::RefWeight(RefWeight::Num(1)))
+            .width(Length::Fixed(btn_wd))
+            .style(theme::Button::custom(OverBtn(
+                self.refweight.contains_key(&RefWeight::Num(1))
+            )))
+            .into(),
+            button(text(format!(
+                "10mg={}",
+                &self
+                    .refweight
+                    .get(&RefWeight::Num(10))
+                    .map(|x| (x.ceil()).numer().map(|x| *x))
+                    .map_or("".to_owned(), |x| x.unwrap().to_string())
+            )))
+            .on_press(Msg::RefWeight(RefWeight::Num(10)))
+            .width(Length::Fixed(btn_wd))
+            .style(theme::Button::custom(OverBtn(
+                self.refweight.contains_key(&RefWeight::Num(10))
+            )))
+            .into(),
+            button(text(format!(
+                "orig={}",
+                &self
+                    .refweight
+                    .get(&RefWeight::Origin)
+                    .map(|x| (x.ceil()).numer().map(|x| *x))
+                    .map_or("".to_owned(), |x| x.unwrap().to_string())
+            )))
+            .on_press(Msg::RefWeight(RefWeight::Origin))
+            .width(Length::Fixed(btn_wd))
+            .style(theme::Button::custom(OverBtn(
+                self.refweight.contains_key(&RefWeight::Origin)
+            )))
+            .into()
+        ])
+        .spacing(5))
+        .spacing(5);
+        let flted = container(flted).padding(15);
         let sld = container(sld).padding(Padding {
             left: 0.,
             right: 0.,
             top: 20.,
             bottom: 20.,
         });
-        let flt =
-            iced_aw::floating_element(ChartWidget::new(self), flted).anchor(Anchor::NorthEast);
+
+        let ofs = iced_aw::floating_element::Offset { x: 30., y: 0. };
+        let flt = iced_aw::floating_element(ChartWidget::new(self), flted)
+            .anchor(Anchor::NorthWest)
+            .offset(ofs);
         row!(flt, sld).spacing(0).into()
     }
 }
