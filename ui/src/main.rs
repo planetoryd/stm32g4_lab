@@ -318,29 +318,35 @@ impl Application for Page {
                 } else {
                     self.ba.refweight.remove(&val);
                 }
-                use linfa::prelude::*;
-                use linfa::traits::Fit;
-                use linfa_linear::LinearRegression;
-                use ndarray::prelude::*;
-                let lin = LinearRegression::new();
-                let mut a2 = Array2::zeros((3, 1));
-                let mut col = a2.column_mut(0);
-                let mut target = vec![];
-                for (i, (w, v)) in self.ba.refweight.iter().enumerate() {
-                    if let RefWeight::Num(n) = w {
-                        let k = GenericDecimal::from_fraction(v.clone()).set_precision(2usize);
-                        let dec: f64 = k.try_into().unwrap();
-                        col[i] = dec;
-                        target.push(*n as f64);
+                if self.ba.refweight.len() >= 2 {
+                    use linfa::prelude::*;
+                    use linfa::traits::Fit;
+                    use linfa_linear::LinearRegression;
+                    use ndarray::prelude::*;
+                    let lin = LinearRegression::new();
+                    let mut a2 = Array2::zeros((3, 1));
+                    let mut col = a2.column_mut(0);
+                    let mut target = vec![];
+                    for (i, (w, v)) in self.ba.refweight.iter().enumerate() {
+                        if let RefWeight::Num(n) = w {
+                            let k = GenericDecimal::from_fraction(v.clone()).set_precision(2usize);
+                            let dec: f64 = k.try_into().unwrap();
+                            col[i] = dec;
+                            target.push(*n as f64);
+                        }
                     }
+                    let sliced = a2.slice(s![..target.len(), ..]).to_owned();
+                    let target = Array1::from_vec(target);
+                    let data = Dataset::new(sliced, target);
+                    dbg!(&data);
+                    let rx = lin.fit(&data).unwrap();
+                    let mut model = LINREG.blocking_write();
+                    *model = Some(rx);
+                } else {
+                    let mut model = LINREG.blocking_write();
+                    *model = None;
                 }
-                let sliced = a2.slice(s![..self.ba.refweight.len(), ..]).to_owned();
-                let target = Array1::from_vec(target);
-                let data = Dataset::new(sliced, target);
-                dbg!(&data);
-                let rx = lin.fit(&data).unwrap();
-                let mut model = LINREG.blocking_write();
-                *model = Some(rx);
+                dbg!(&self.ba.refweight);
             }
             Msg::BaSelect(sel) => {
                 self.ba.select = match sel {

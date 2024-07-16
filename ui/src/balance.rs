@@ -35,8 +35,13 @@ pub struct BalanceChart {
 pub static SELECTED_POINTS: RwLock<Option<HashSet<(usize, u32)>>> = RwLock::const_new(None);
 pub static LINREG: RwLock<Option<FittedLinearRegression<f64>>> = RwLock::const_new(None);
 
+#[derive(Default)]
+pub struct ChartState {
+    show_raw: bool,
+}
+
 impl Chart<Msg> for BalanceChart {
-    type State = ();
+    type State = ChartState;
 
     fn build_chart<DB: DrawingBackend>(&self, state: &Self::State, builder: ChartBuilder<DB>) {}
     fn draw_chart<DB: DrawingBackend>(
@@ -48,7 +53,7 @@ impl Chart<Msg> for BalanceChart {
 
         let mut cx = cb
             .x_label_area_size(20)
-            .y_label_area_size(30)
+            .y_label_area_size(if state.show_raw { 80 } else { 30 })
             .margin(10)
             .build_cartesian_2d(0usize..self.pcoupler.bits_capacity() as usize, 0..5u32)
             .unwrap();
@@ -79,7 +84,7 @@ impl Chart<Msg> for BalanceChart {
         let getref = |nomimal: u32| {
             (
                 self.refweight
-                    .get(&RefWeight::Num(0))
+                    .get(&RefWeight::Num(nomimal))
                     .map(|x| *x.floor().numer().unwrap() as u32),
                 nomimal,
             )
@@ -156,7 +161,11 @@ impl Chart<Msg> for BalanceChart {
                 let recs = arr2(&[[*k as f64]]);
                 let mut res = arr1(&[0.]);
                 pred.predict_inplace(&recs, &mut res);
-                format!("{:.1}", res[0])
+                if state.show_raw {
+                    format!("{}", k)
+                } else {
+                    format!("{:.1}", res[0])
+                }
             };
             cx.configure_mesh().y_label_formatter(&fmt).draw().unwrap();
         } else {
@@ -264,6 +273,13 @@ impl Chart<Msg> for BalanceChart {
                     Some(Msg::BaSelect(BaSelect::End(None))),
                 );
             }
+        }
+
+        match event {
+            Event::Keyboard(iced::keyboard::Event::ModifiersChanged(ev)) => {
+                state.show_raw = ev.control();
+            }
+            _ => (),
         }
         (iced::event::Status::Ignored, None)
     }
