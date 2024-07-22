@@ -22,3 +22,8 @@ pub fn log2test() {
         println!("{} -> {:?}", i, k)
     }
 }
+
+#[test]
+pub fn mo() {
+    dbg!(1 + (2 << 1));
+}

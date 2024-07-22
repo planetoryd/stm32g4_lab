@@ -14,9 +14,10 @@ use std::time::{Duration, Instant};
 use std::{default, iter};
 
 use balance::{BalanceChart, LINREG, SELECTED_POINTS};
+use bittle::BitsMut;
 use common::num::log2;
 use common::{
-    G4Command, G4Message, G4Settings, Setting, SettingState, BUF_SIZE, FREQ_PRESETS,
+    BalanceReport, G4Command, G4Message, G4Settings, Setting, SettingState, BUF_SIZE, FREQ_PRESETS,
     MAX_PACKET_SIZE,
 };
 use fraction::{Fraction, GenericDecimal, ToPrimitive};
@@ -210,13 +211,19 @@ impl Application for Page {
                 REPORT_COUNTER.fetch_add(1, Ordering::SeqCst);
                 self.hall.data_points.push_iter_overwrite(new);
                 self.meta.reports.push_overwrite(stat);
-                if data.balance.len() > 0 {
-                    self.ba.pcoupler = data.balance.into_array().unwrap().into();
-                }
                 if data.balance_val > 0 {
                     self.ba.measurements.push_overwrite(data.balance_val);
                     if WEIGHING.load(Ordering::SeqCst) {
                         let _ = self.update(Msg::G4Cmd(G4Command::Weigh));
+                    }
+                }
+                for m in data.balance {
+                    self.ba.balance_rp.push_overwrite(m);
+                    if let Some(vm) = m.vmap {
+                        self.ba.vmaps.push_overwrite(vm);
+                    }
+                    if let Some(speed) = m.speed {
+                        self.ba.speed.push_overwrite(speed);
                     }
                 }
             }
@@ -311,6 +318,12 @@ impl Application for Page {
                     let sum = sel.iter().map(|x| x.1).sum::<u32>();
                     if sel.len() > 0 {
                         let fr = Fraction::from(sum) / sel.len();
+                        if val == RefWeight::Num(0) {
+                            let k = fr.floor();
+                            let num = k.numer().unwrap();
+                            let _ =
+                                self.update(Msg::G4Setting(Setting::DACIdle((*num - 100) as u16)));
+                        }
                         self.ba.refweight.insert(val, fr);
                     } else {
                         self.ba.refweight.remove(&val);
@@ -318,7 +331,14 @@ impl Application for Page {
                 } else {
                     self.ba.refweight.remove(&val);
                 }
-                if self.ba.refweight.len() >= 2 {
+                let refs: Vec<_> = self
+                    .ba
+                    .refweight
+                    .clone()
+                    .into_iter()
+                    .filter(|(k, _)| *k != RefWeight::Origin)
+                    .collect();
+                if refs.len() >= 2 {
                     use linfa::prelude::*;
                     use linfa::traits::Fit;
                     use linfa_linear::LinearRegression;
@@ -339,9 +359,15 @@ impl Application for Page {
                     let target = Array1::from_vec(target);
                     let data = Dataset::new(sliced, target);
                     dbg!(&data);
-                    let rx = lin.fit(&data).unwrap();
-                    let mut model = LINREG.blocking_write();
-                    *model = Some(rx);
+                    match lin.fit(&data) {
+                        Ok(rx) => {
+                            let mut model = LINREG.blocking_write();
+                            *model = Some(rx);
+                        }
+                        Err(e) => {
+                            println!("model err {:?}", e)
+                        }
+                    }
                 } else {
                     let mut model = LINREG.blocking_write();
                     *model = None;
@@ -464,13 +490,13 @@ impl Application for Page {
                             let time_in_millisecs: usize = 2usize.pow(t);
                             Msg::G4Setting(Setting::SetViewport(t, time_in_millisecs))
                         }),
-                        text(format!("DAC-OUT {}", self.dac_val)),
-                        slider(0..=10, self.dac_val, |t| {
-                            Msg::G4Cmd(G4Command::SetDAC(t))
+                        text(format!("DAC Idle {}", g4.idle)),
+                        slider(0..=4095, g4.idle, |t| {
+                            Msg::G4Setting(Setting::DACIdle(t as u16))
                         }),
-                        text(format!("Probe-expand {}", g4.probe_expand)),
-                        slider(0..=60, g4.probe_expand, |t| {
-                            Msg::G4Setting(Setting::ProbeExpand(t as u8))
+                        text(format!("DAC override {}", self.dac_val)),
+                        slider(0..=4095, self.dac_val, |t| {
+                            Msg::G4Cmd(G4Command::SetDAC(t as u32))
                         }),
                         controls,
                         text(format!(

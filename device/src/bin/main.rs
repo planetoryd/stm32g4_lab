@@ -8,15 +8,18 @@
 #![allow(unused_mut)]
 
 use core::{
+    borrow::BorrowMut,
     cmp::{max, min},
     future::{pending, Pending},
     hash::{Hash, Hasher, SipHasher},
+    mem::MaybeUninit,
     ops::{Range, RangeFrom},
+    pin::pin,
     sync::atomic::{self, AtomicBool, AtomicU16, AtomicU32, Ordering::SeqCst},
 };
 
 use ::atomic::Atomic;
-use bbqueue::{BBBuffer, Consumer, Producer};
+use bbqueue::BBBuffer;
 use bittle::{BitsMut, BitsOwned};
 use common::{
     cob::{
@@ -24,7 +27,8 @@ use common::{
         COBErr::{Codec, NextRead},
         COBSeek, COB,
     },
-    G4Command, G4Message, G4Settings, BALANCE_BYTES, HALL_BYTES, MAX_PACKET_SIZE,
+    BalanceReport, G4Command, G4Message, G4Settings, VMap, BALANCE_BYTES, HALL_BYTES,
+    MAX_PACKET_SIZE,
 };
 use defmt::*;
 use embassy_futures::{
@@ -44,10 +48,17 @@ use embassy_usb::{
     UsbDevice,
 };
 
-use futures_util::{Stream, StreamExt};
-use heapless::Vec;
+use futures_util::{future::select, Stream, StreamExt};
+use heapless::{Deque, LinearMap, Vec};
+use lock_free_static::lock_free_static;
 #[cfg(not(feature = "defmt"))]
 use panic_halt as _;
+use ringbuf::{
+    storage::Owning,
+    traits::{Producer, SplitRef},
+    wrap::caching::Caching,
+    SharedRb, StaticRb,
+};
 #[cfg(feature = "defmt")]
 use {defmt_rtt as _, panic_probe as _};
 
@@ -56,23 +67,27 @@ use embassy_executor::{SpawnToken, Spawner};
 use embassy_stm32::{
     adc::{self, Adc, Temperature, VrefInt},
     bind_interrupts,
-    dac::{Dac, DacCh1, Value},
+    cordic::{self, utils, Cordic},
+    dac::{Dac, DacCh1, DacCh2, DacChannel, TriggerSel, Value},
     dma::WritableRingBuffer,
     exti::ExtiInput,
     flash::BANK1_REGION,
-    gpio::{self, Level, Output, Pull, Speed},
-    interrupt,
+    gpio::{self, Input, Level, Output, Pull, Speed},
+    interrupt::{self, InterruptExt},
     opamp::{self, *},
-    pac::spi::vals::Ismod,
-    peripherals::{DAC1, DMA1, OPAMP1, PA1, PA4, PB0, PB10, RNG, TIM2, USB},
+    peripherals::{
+        ADC1, ADC2, DAC1, DAC3, DMA1, EXTI0, EXTI1, EXTI6, OPAMP1, OPAMP2, OPAMP3, PA1, PA2, PA4,
+        PA5, PA6, PA7, PB0, PB10, PC6, RNG, TIM1, TIM2, USB,
+    },
     rng::Rng,
     time::{khz, mhz},
-    timer::pwm_input::PwmInput,
+    timer::{low_level, pwm_input::PwmInput},
     usb::Driver,
-    Config,
+    Config, Peripheral,
 };
 use embassy_stm32::{peripherals, rng, usb};
 use embassy_time::{Delay, Duration, Instant, Ticker, Timer};
+use micromath::*;
 
 bind_interrupts!(
     struct Irqs {
@@ -89,6 +104,7 @@ static CONF: Atomic<G4Settings> = Atomic::new(G4Settings::new());
 static CONF_NOTIF: PubSubChannel<CriticalSectionRawMutex, (), 4, 2, 1> = PubSubChannel::new();
 static CHECK_STATE: AtomicBool = AtomicBool::new(false);
 static WEIGH_NOTIF: Channel<CriticalSectionRawMutex, Notif, 1> = Channel::new();
+static DAC_NOTIF: Channel<CriticalSectionRawMutex, Notif, 1> = Channel::new();
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -109,9 +125,8 @@ async fn main(spawner: Spawner) {
 
         // config.enable_ucpd1_dead_battery = true;
     }
-
+    debug!("init");
     let mut p = embassy_stm32::init(config);
-
     // info!("init opmap for hall effect sensor");
     // let mut adc: Adc<peripherals::ADC1> = Adc::new(p.ADC1);
     // adc.set_sample_time(adc::SampleTime::CYCLES24_5);
@@ -123,7 +138,7 @@ async fn main(spawner: Spawner) {
     let driver = Driver::new(p.USB, Irqs, p.PA12, p.PA11);
     let mut config = embassy_usb::Config::new(0xc0de, 0xcafe);
     config.manufacturer = Some("Plein");
-    config.product = Some("HALL_BUFSIZE device G4");
+    config.product = Some("device G4");
     config.serial_number = Some("1");
     config.device_class = 0xEF;
     config.device_sub_class = 0x02;
@@ -150,11 +165,18 @@ async fn main(spawner: Spawner) {
     info!("usb max packet size, {}", sx.max_packet_size());
     let mut usb = builder.build();
     let usb_fut = usb.run();
+    let (hall_prod, cons_hall) = unwrap!(HALL_DATA.try_split().map_err(|x| "bbq split"));
 
-    let (prod, mut cons) = HALL_DATA.try_split().unwrap();
+    defmt::assert!(ADC_BUF.init());
+
+    let (ba_prod, ba_cons) = unwrap!(ADC_BUF.get_mut()).split_ref();
+    let mut bufrd = BufReaders {
+        hall_con: cons_hall,
+        balance: ba_cons,
+    };
 
     let report_fut = async {
-        let sig = unsafe { USB_SIGNAL.publisher() }.unwrap();
+        let sig = unwrap!(unsafe { USB_SIGNAL.publisher() });
         loop {
             info!("waiting for usb");
             sx.wait_connection().await;
@@ -163,7 +185,7 @@ async fn main(spawner: Spawner) {
                 sig.publish(USB_STATE).await;
             }
             info!("Connected");
-            let x = join::join(report(&mut sx, &mut cons), listen(&mut rx)).await;
+            let x = join::join(report(&mut sx, &mut bufrd), listen(&mut rx)).await;
             info!("Disconnected, {:?}", x);
             unsafe {
                 USB_STATE = UsbState::Waiting;
@@ -172,20 +194,14 @@ async fn main(spawner: Spawner) {
         }
     };
 
-    unwrap!(spawner.spawn(balance(p.DAC1, p.DMA1, p.PA4, p.PB0, rngen)));
-    unwrap!(spawner.spawn(hall_digital(p.PA1, prod)));
-    // spawner
-    //     .spawn(hall_watcher(adc, p.OPAMP1, p.PA1, vrefint, temp))
-    //     .unwrap();
+    debug!("start balance");
+
+    unwrap!(spawner.spawn(feedbacked_balance(
+        p.DAC1, p.DMA1, p.PA5, p.PB0, p.ADC2, p.ADC1, p.OPAMP2, p.PA6, ba_prod, p.OPAMP1, p.PA7
+    )));
+    unwrap!(spawner.spawn(hall_digital(p.PA1, hall_prod)));
+
     embassy_futures::join::join(usb_fut, report_fut).await;
-
-    // pending::<()>().await;
-    // Driver::new();
-
-    // loop {
-    //     info!("PA1={}", adc.read(&mut opi));
-    //     Timer::after_millis(500).await;
-    // }
 }
 
 #[embassy_executor::task]
@@ -220,87 +236,183 @@ async fn hall_watcher(
     }
 }
 
-enum PointerState {
-    Below,
-    Above,
+use embassy_futures::select::select as slct;
+
+#[derive(Clone, Copy, Format)]
+struct Photocouplers {
+    up: bool,
+    down: bool,
+}
+use ringbuf::traits::*;
+
+use bytemuck::*;
+
+#[derive(Clone, Copy, NoUninit, Format)]
+#[repr(u8)]
+enum PointS {
+    Up,
+    Down,
     Mid,
 }
 
+#[derive(Clone, Copy, NoUninit, Format)]
+#[repr(C)]
+struct PointV {
+    speed: i64,
+}
+
+static VELOCITY: Atomic<PointV> = Atomic::new(PointV { speed: 0 });
+static PT_STATS: Atomic<PtStats> = Atomic::new(PtStats { sum: 0, counter: 0 });
+static FEEDBACK_AVG: Channel<CriticalSectionRawMutex, u32, 2> = Channel::new();
+const PT_PAST: u32 = 256;
+
+#[derive(Clone, Copy, NoUninit, Format, Default)]
+#[repr(C)]
+struct PtStats {
+    sum: u32,
+    counter: u32,
+}
+struct StateSpan {
+    t: Instant,
+    mid: bool,
+}
+
 #[embassy_executor::task]
-async fn balance(dac: DAC1, dma: DMA1, pin: PA4, pc: PB0, rng: Rng<'static, peripherals::RNG>) {
-    let mut dac = DacCh1::new(dac, dma, pin);
-    let pc = gpio::Input::new(pc, Pull::Down);
-    dac.enable();
-    dac.set(Value::Bit12Left(0));
-    let max_dac: u16 = 4095;
-    loop {
-        WEIGH_NOTIF.receive().await;
-        let conf = CONF.load(SeqCst);
-        dac.set(Value::Bit12Left(conf.bump as u16));
-        Timer::after_millis(conf.bump_wait as u64).await;
-        let mut tk = Ticker::every(Duration::from_millis(conf.balance_interval as u64));
-        for step in conf.bump as u16..max_dac {
-            dac.set(Value::Bit12Left(step));
-            tk.next().await;
-            if pc.is_low() {
-                break;
-            }
-        }
-        let mut mean = dac.read();
-        info!("approx1={}", mean);
-        let mut approx = async |num: u32, delta: u16, time_init: u64, time: u64| {
-            let low = mean - delta;
-            let up = mean + delta;
-            dac.set(Value::Bit12Left(low));
-            Timer::after_millis(time_init).await;
-            for step in low..up {
-                dac.set(Value::Bit12Left(step));
-                Timer::after_millis(time).await;
-                if pc.is_low() {
-                    mean = dac.read();
-                    info!("approx{}={}", num, mean);
-                    break;
-                }
-            }
-        };
-        approx(2, 10, 300, 100).await;
-        approx(3, 3, 500, 800).await;
-        BALANCE_MEAN.store(mean, SeqCst);
+async fn feedbacked_balance(
+    dac: DAC1,
+    dma: DMA1,
+    pin: PA5,
+    fb: PB0,
+    adc2: ADC2,
+    adc1: ADC1,
+    op2: OPAMP2,
+    mut pc: PA6,
+    mut prod: Caching<
+        &'static SharedRb<Owning<[MaybeUninit<BalanceReport>; ADC_BUF_LEN]>>,
+        true,
+        false,
+    >,
+    op1: OPAMP1,
+    mut hall: PA7,
+) {
+    let mut op2 = OpAmp::new(op2, OpAmpSpeed::Normal);
+    let mut op2out = op2.buffer_int(fb, OpAmpGain::Mul16);
 
-        if conf.probe_expand > 0 {
-            // this is used for verification
-            let mut vec = [false; BALANCE_BYTES * 8];
-            let half = vec.len() / 2;
-            let mut tk = Ticker::every(Duration::from_millis(conf.balance_verify as u64));
-            info!(
-                "balance, mean {}, range {}",
-                mean,
-                conf.probe_expand as usize * half
-            );
+    let mut adc2 = Adc::new(adc2);
+    let mut adc1 = Adc::new(adc1);
+    let mut dac2 = DacCh2::new(dac, dma, pin);
 
-            for di in (0usize..half as usize).into_iter().rev() {
-                let mut fill = async |val: &mut bool, dac_val: u16| {
-                    dac.set(Value::Bit12Left(dac_val));
-                    tk.next().await;
-                    *val = pc.is_high();
+    let mut op1 = OpAmp::new(op1, OpAmpSpeed::Normal);
+    let mut op1out = op1.buffer_int(hall, OpAmpGain::Mul2);
+
+    dac2.enable();
+    static PTST: Atomic<PointS> = Atomic::new(PointS::Up);
+    let pcin = Input::new(pc, Pull::Up);
+
+    let mut sts = StaticRb::<StateSpan, 8>::default();
+    let (sprod, scon) = sts.split_ref();
+    embassy_futures::join::join(
+        async {
+            let read = || pcin.is_low();
+            let mut last: Option<StateSpan> = Some(StateSpan {
+                t: Instant::now(),
+                mid: read(),
+            });
+            loop {
+                Timer::after_millis(2).await;
+                let mut rp = BalanceReport {
+                    feedback: adc2.blocking_read(&mut op2out),
+                    photoc: if read() { 3000 } else { 1000 },
+                    vmap: None,
+                    speed: None,
+                    hall: adc1.blocking_read(&mut op1out),
                 };
-                let di2 = di as u16 * conf.probe_expand as u16;
-                (fill)(&mut vec[half as usize - 1 - di], mean - di2).await;
-                (fill)(&mut vec[half as usize + di], mean + di2).await;
-            }
-            for (ix, val) in vec.into_iter().enumerate() {
-                unsafe {
-                    if !val {
-                        BALANCE.clear_bit(ix as u32)
-                    } else {
-                        BALANCE.set_bit(ix as u32)
+                let sp = StateSpan {
+                    t: Instant::now(),
+                    mid: rp.photoc < 3000,
+                };
+                if let Some(last) = &mut last {
+                    if sp.mid != last.mid {
+                        let leave = !sp.mid;
+                        let speed = sp.t - last.t;
+                        let mut speed = speed.as_micros() as i64;
+                        if leave {
+                            speed = -speed;
+                        }
+                        rp.speed = Some(speed as i32);
+                        debug!("speed = {}", speed);
+                        VELOCITY.store(PointV { speed }, SeqCst);
+                        *last = sp;
                     }
-                };
+                }
+                let prev = PT_STATS.fetch_update(SeqCst, SeqCst, |v| {
+                    Some(if v.counter >= PT_PAST {
+                        PtStats {
+                            counter: 0,
+                            sum: rp.feedback as u32,
+                        }
+                    } else {
+                        PtStats {
+                            counter: v.counter + 1,
+                            sum: v.sum + rp.feedback as u32,
+                        }
+                    })
+                });
+                if let Ok(prev) = prev {
+                    if prev.counter >= PT_PAST {
+                        let avg = prev.sum / (prev.counter + 1);
+                        let _ = FEEDBACK_AVG.try_send(avg);
+                        let stat = VMap {
+                            dac: unsafe { DAC_VAL },
+                            fbavg: avg as u16,
+                        };
+                        let _ = rp.vmap.insert(stat);
+                    }
+                }
+                if prod.is_full() {
+                    Timer::after_millis(500).await;
+                    continue;
+                }
+                prod.push_iter([rp].into_iter());
             }
-            BALANCE_DATA.store(true, SeqCst);
-        }
-        info!("weighing finished, {}", dac.read());
-    }
+        },
+        async {
+            type DacT = DacCh2<'static, DAC1, DMA1>;
+            let val = |da: &DacT| da.read();
+            let mut set = |v, da: &mut DacT| {
+                unsafe {
+                    DAC_VAL = v;
+                }
+                da.set(Value::Bit12Left(v));
+            };
+            for x in [0, 40, 29].into_iter().cycle() {
+                set(x * 100, &mut dac2);
+                debug!("set dac to {}", x);
+                Timer::after_millis(1000).await;
+            }
+            // loop {
+            //     let n = PTST.load(atomic::Ordering::Relaxed);
+            //     match n {
+            //         PointS::Down => {
+            //             let t = val(&dac2).saturating_add_signed(-10);
+            //             set(t, &mut dac2);
+            //         }
+            //         PointS::Up => {
+            //             let t = val(&dac2).saturating_add_signed(10);
+            //             set(t, &mut dac2);
+            //         }
+            //         _ => (),
+            //     }
+            //     Timer::after_millis(10).await;
+            // }
+        },
+    )
+    .await;
+    debug!("fb balance ended");
+}
+
+async fn measure_ratio(mut out: impl FnMut(u16), mut read: impl FnMut()) {
+    out(0);
 }
 
 static mut DAC_VAL: u16 = 0;
@@ -309,10 +421,10 @@ static BALANCE_DATA: AtomicBool = AtomicBool::new(false);
 static BALANCE_MEAN: AtomicU16 = AtomicU16::new(0);
 
 #[embassy_executor::task]
-async fn hall_digital(pa1: PA1, mut prod: Producer<'static, HALL_BUFSIZE>) {
+async fn hall_digital(pa1: PA1, mut prod: bbqueue::Producer<'static, HALL_BUFSIZE>) {
     let p = gpio::Input::new(pa1, Pull::Up);
     unsafe {
-        let mut usb = USB_SIGNAL.subscriber().unwrap();
+        let mut usb = unwrap!(USB_SIGNAL.subscriber());
         loop {
             if USB_STATE == UsbState::Connected
                 || usb.next_message_pure().await == UsbState::Connected
@@ -321,7 +433,7 @@ async fn hall_digital(pa1: PA1, mut prod: Producer<'static, HALL_BUFSIZE>) {
             }
         }
     }
-    let mut confn = CONF_NOTIF.subscriber().unwrap();
+    let mut confn = unwrap!(CONF_NOTIF.subscriber());
     loop {
         let conf = CONF.load(SeqCst);
         let mut tker = Ticker::every(Duration::from_micros(conf.sampling_interval));
@@ -377,7 +489,7 @@ async fn listen<'d, T: 'd + embassy_stm32::usb::Instance>(
 ) -> Result<(), Disconnected> {
     info!("listening for commands");
     unsafe {
-        let mut usb = USB_SIGNAL.subscriber().unwrap();
+        let mut usb = unwrap!(USB_SIGNAL.subscriber());
         loop {
             if USB_STATE == UsbState::Connected
                 || usb.next_message_pure().await == UsbState::Connected
@@ -392,7 +504,7 @@ async fn listen<'d, T: 'd + embassy_stm32::usb::Instance>(
 
     loop {
         rg.get_or_insert(0..);
-        let rd = rx.read_packet(&mut buf[rg.take().unwrap()]).await?;
+        let rd = rx.read_packet(&mut buf[unwrap!(rg.take())]).await?;
         if rd == 0 {
             Timer::after_secs(2).await;
             continue;
@@ -415,6 +527,7 @@ async fn listen<'d, T: 'd + embassy_stm32::usb::Instance>(
                         unsafe {
                             DAC_VAL = dac as u16;
                         }
+                        let _ = DAC_NOTIF.try_send(Notif);
                     }
                     G4Command::Weigh => {
                         let _ = WEIGH_NOTIF.try_send(Notif);
@@ -434,16 +547,30 @@ async fn listen<'d, T: 'd + embassy_stm32::usb::Instance>(
     Ok(())
 }
 
-const HALL_BUFSIZE: usize = 1024 * 4;
+const HALL_BUFSIZE: usize = 1024 * 2;
 static HALL_DATA: BBBuffer<HALL_BUFSIZE> = BBBuffer::new();
+
+lock_free_static! {
+    static mut ADC_BUF : StaticRb<BalanceReport, ADC_BUF_LEN>  = StaticRb::default();
+}
+const ADC_BUF_LEN: usize = 4;
+
+struct BufReaders {
+    hall_con: bbqueue::Consumer<'static, HALL_BUFSIZE>,
+    balance:
+        Caching<&'static SharedRb<Owning<[MaybeUninit<BalanceReport>; ADC_BUF_LEN]>>, false, true>,
+}
 
 async fn report<'d, T: 'd + embassy_stm32::usb::Instance>(
     class: &mut cdc_acm::Sender<'d, Driver<'d, T>>,
-    hall_con: &mut Consumer<'static, HALL_BUFSIZE>,
+    BufReaders {
+        hall_con,
+        balance: ba,
+    }: &mut BufReaders,
 ) -> Result<(), Disconnected> {
     info!("reporting enabled");
     unsafe {
-        let mut usb = USB_SIGNAL.subscriber().unwrap();
+        let mut usb = unwrap!(USB_SIGNAL.subscriber());
         loop {
             if USB_STATE == UsbState::Connected
                 || usb.next_message_pure().await == UsbState::Connected
@@ -452,10 +579,9 @@ async fn report<'d, T: 'd + embassy_stm32::usb::Instance>(
             }
         }
     }
-    let mut tkreload = Ticker::every(Duration::from_secs(1));
+    let mut tkreload = Ticker::every(Duration::from_secs(3));
     loop {
         let e = embassy_futures::select::select(tkreload.next(), async {
-            // debug!("reloading conf");
             let conf: G4Settings = CONF.load(SeqCst);
 
             let mut tkrp = Ticker::every(Duration::from_micros(conf.min_report_interval));
@@ -463,8 +589,8 @@ async fn report<'d, T: 'd + embassy_stm32::usb::Instance>(
                 let hall: Option<Vec<u8, HALL_BYTES>>;
                 if let Ok(rd) = hall_con.read() {
                     let copy = &rd[..min(rd.len(), HALL_BYTES)];
-                    hall = Some(heapless::Vec::from_slice(copy).unwrap());
-                    rd.release(hall.as_ref().unwrap().len());
+                    hall = Some(unwrap!(heapless::Vec::from_slice(copy)));
+                    rd.release(unwrap!(hall.as_ref()).len());
                 } else {
                     hall = None;
                 };
@@ -477,17 +603,14 @@ async fn report<'d, T: 'd + embassy_stm32::usb::Instance>(
                 if bval > 0 {
                     BALANCE_MEAN.store(0, SeqCst);
                 }
+
                 let reply = G4Message {
                     hall: hall.unwrap_or_default(),
                     state: if send_state { Some(conf) } else { None },
                     ack: conf.id,
-                    balance: if BALANCE_DATA.load(SeqCst) {
-                        BALANCE_DATA.store(false, SeqCst);
-                        Vec::from_slice(&unsafe { BALANCE.into_bits() }).unwrap()
-                    } else {
-                        Vec::new()
-                    },
                     balance_val: bval,
+                    balance: ba.pop_iter().collect(),
+                    ..Default::default()
                 };
                 let rx: Result<heapless::Vec<u8, 1024>, postcard::Error> =
                     postcard::to_vec_cobs(&reply);

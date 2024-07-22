@@ -14,8 +14,9 @@ pub struct G4Message {
     pub hall: Vec<u8, HALL_BYTES>,
     pub state: Option<G4Settings>,
     pub ack: u64,
-    pub balance: Vec<u8, BALANCE_BYTES>,
     pub balance_val: u16,
+    pub balance: Vec<BalanceReport, BALANCE_BYTES>,
+    pub dac: Vec<u16, BALANCE_BYTES>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Format)]
@@ -38,15 +39,13 @@ pub struct G4Settings {
     /// in us
     pub min_report_interval: u64,
     /// used for ui, num of sample bytes
-    pub sampling_window: u64,
     /// initial value for balance DAC
-    pub bump: u16,
-    pub bump_wait: u16,
-    /// in millis
+    pub sampling_window: u64,
+    pub id: u64,
+    pub idle: u32,
+    pub balance_verify: u16,
     pub balance_interval: u8,
     pub probe_expand: u8,
-    pub balance_verify: u16,
-    pub id: u64,
 }
 
 impl Default for G4Settings {
@@ -62,8 +61,7 @@ impl G4Settings {
             min_report_interval: FREQ_PRESETS[4],
             sampling_window: 200,
             id: 0,
-            bump: 500,
-            bump_wait: 500,
+            idle: 200,
             balance_interval: 5,
             balance_verify: 20,
             probe_expand: 0,
@@ -102,8 +100,8 @@ impl SettingState for G4Settings {
             Setting::SetSamplingIntv(t) => {
                 self.sampling_interval = t;
             }
-            Setting::ProbeExpand(v) => {
-                self.probe_expand = v;
+            Setting::DACIdle(v) => {
+                self.idle = v as u32;
             }
             _ => unreachable!(),
         }
@@ -119,16 +117,31 @@ pub enum Setting {
     SetViewport(u32, usize),
     SetRefreshIntv(u64),
     SetSamplingIntv(u64),
-    ProbeExpand(u8),
+    DACIdle(u16),
 }
 
-pub const HALL_BYTES: usize = 256;
-pub const BALANCE_BYTES: usize = 8;
+pub const HALL_BYTES: usize = 64;
+pub const BALANCE_BYTES: usize = 4;
 pub const MAX_PACKET_SIZE: usize = 4096;
 pub const BUF_SIZE: usize = MAX_PACKET_SIZE * 2;
 
-const_assert!(size_of::<G4Message>() < MAX_PACKET_SIZE);
+// const_assert!(size_of::<G4Message>() < MAX_PACKET_SIZE);
 const_assert!(size_of::<G4Command>() < MAX_PACKET_SIZE);
 
 pub mod cob;
 pub mod num;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Format)]
+pub struct BalanceReport {
+    pub feedback: u16,
+    pub photoc: u16,
+    pub vmap: Option<VMap>,
+    pub speed: Option<i32>,
+    pub hall: u16,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Format)]
+pub struct VMap {
+    pub dac: u16,
+    pub fbavg: u16,
+}

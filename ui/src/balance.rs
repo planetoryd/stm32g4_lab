@@ -3,7 +3,7 @@ use std::{collections::HashSet, fmt::format};
 use crate::*;
 use bittle::prelude::*;
 use button::Appearance;
-use common::BALANCE_BYTES;
+use common::{VMap, BALANCE_BYTES};
 use fraction::Fraction;
 use iced::{
     mouse,
@@ -30,7 +30,13 @@ pub struct BalanceChart {
     pub cur_moving: bool,
     /// nominal weight in mg to val
     pub refweight: BTreeMap<RefWeight, Fraction>,
+    pub balance_rp: HeapRb<BalanceReport>,
+    pub vmaps: HeapRb<VMap>,
+    pub speed: HeapRb<i32>,
 }
+
+pub const RP_LEN: usize = 8192 * 2;
+pub const SPEED_LEN: usize = 512;
 
 pub static SELECTED_POINTS: RwLock<Option<HashSet<(usize, u32)>>> = RwLock::const_new(None);
 pub static LINREG: RwLock<Option<FittedLinearRegression<f64>>> = RwLock::const_new(None);
@@ -91,8 +97,18 @@ impl Chart<Msg> for BalanceChart {
         };
         let (refmin, nom_min) = getref(1);
         let (refmax, nom_max) = getref(10);
-        let ymin = refmin.or(vymin).map(|x| x - 5).or(Some(1000)).unwrap();
-        let ymax = refmax.or(vymax).map(|x| x + 5).or(Some(4095)).unwrap();
+        let ymin = refmin
+            .map(|x| x)
+            .or(vymin)
+            .map(|x| x)
+            .or(Some(1000))
+            .unwrap();
+        let ymax = refmax
+            .map(|x| x + 100)
+            .or(vymax)
+            .map(|x| x + 5)
+            .or(Some(4095))
+            .unwrap();
         let xcord = 0usize..self.measurements.capacity().get();
         let mut cx = cb
             .x_label_area_size(20)
@@ -167,9 +183,9 @@ impl Chart<Msg> for BalanceChart {
                     format!("{:.1}", res[0])
                 }
             };
-            cx.configure_mesh().y_label_formatter(&fmt).draw().unwrap();
+            // cx.configure_mesh().y_label_formatter(&fmt).draw().unwrap();
         } else {
-            cx.configure_mesh().draw().unwrap();
+            // cx.configure_mesh().draw().unwrap();
         }
 
         drop(sp);
@@ -179,13 +195,131 @@ impl Chart<Msg> for BalanceChart {
         let tx = if let Some(ref inn) = *sel {
             if inn.len() > 0 {
                 let avg = inn.iter().map(|x| x.1 as usize).sum::<usize>() / inn.len();
-                format!("avg={}", avg)
+                if let Some(pred) = &*pred {
+                    let recs = arr2(&[[avg as f64]]);
+                    let mut res = arr1(&[0.]);
+                    pred.predict_inplace(&recs, &mut res);
+                    format!("avg={}={}mg", avg, res[0])
+                } else {
+                    format!("avg={}", avg)
+                }
             } else {
                 df
             }
         } else {
             df
         };
+
+        if self.balance_rp.occupied_len() > 0 {
+            let fb_max = self
+                .balance_rp
+                .iter()
+                .max_by_key(|x| x.feedback)
+                .map(|x| x.feedback as i32 + 20);
+            let fb_min = self
+                .balance_rp
+                .iter()
+                .min_by_key(|x| x.feedback)
+                .map(|x| x.feedback as i32 - 20);
+            let mut cb = ChartBuilder::on(&root);
+            let mut cx = cb
+                .x_label_area_size(20)
+                .y_label_area_size(30)
+                .margin(10)
+                .build_cartesian_2d(
+                    0..RP_LEN as i32,
+                    fb_min.unwrap_or(0)..fb_max.unwrap_or(4095i32),
+                )
+                .unwrap();
+            cx.draw_series(LineSeries::new(
+                self.balance_rp
+                    .iter()
+                    .enumerate()
+                    .map(|(x, y)| (x as i32, y.feedback as i32)),
+                plotters::style::full_palette::TEAL.mix(0.8),
+            ))
+            .unwrap();
+            let v_max = self.speed.iter().max().map(|x| *x + 1000);
+            let v_min = self.speed.iter().min().map(|x| *x - 1000);
+            if let (Some(vmin), Some(vmax)) = (v_min, v_max) {
+                let mut c2 =
+                    cx.set_secondary_coord(0..SPEED_LEN as i32, vmin as i32..(vmax as i32));
+                c2.draw_secondary_series(LineSeries::new(
+                    self.speed
+                        .iter()
+                        .enumerate()
+                        .map(|(x, y)| (x as i32, *y as i32)),
+                    plotters::style::full_palette::ORANGE.mix(0.8),
+                ))
+                .unwrap();
+                c2.configure_mesh().draw().unwrap();
+            } else {
+                cx.configure_mesh().draw().unwrap();
+            }
+
+            let mut cb = ChartBuilder::on(&root);
+            let mut cx = cb
+                .x_label_area_size(20)
+                .y_label_area_size(30)
+                .margin(10)
+                .build_cartesian_2d(0..RP_LEN as i32, 0..4095i32)
+                .unwrap();
+            cx.draw_series(LineSeries::new(
+                self.balance_rp
+                    .iter()
+                    .enumerate()
+                    .map(|(x, y)| (x as i32, y.photoc as i32)),
+                plotters::style::full_palette::TEAL.mix(0.8),
+            ))
+            .unwrap();
+
+            let mut cb = ChartBuilder::on(&root);
+            let ymax = self.balance_rp.iter().max_by_key(|x| x.hall);
+            let ymin = self.balance_rp.iter().min_by_key(|x| x.hall);
+            let y_max = ymax.map(|x| x.hall as i32).unwrap_or(4095);
+            let y_min = ymin.map(|x| x.hall as i32).unwrap_or(0);
+            let mut cx = cb
+                .x_label_area_size(20)
+                .y_label_area_size(30)
+                .margin(10)
+                .build_cartesian_2d(0..RP_LEN as i32, y_min..y_max)
+                .unwrap();
+
+            cx.draw_series(LineSeries::new(
+                self.balance_rp
+                    .iter()
+                    .enumerate()
+                    .map(|(x, y)| (x as i32, y.hall as i32)),
+                plotters::style::full_palette::AMBER.mix(0.8),
+            ))
+            .unwrap();
+        }
+
+        if self.vmaps.occupied_len() > 0 {
+            let mut cb = ChartBuilder::on(&root);
+            let mut cx = cb
+                .x_label_area_size(20)
+                .y_label_area_size(30)
+                .margin(10)
+                .build_cartesian_2d(0..VMAP_LEN as i32, 0..4095i32)
+                .unwrap();
+            cx.draw_series(LineSeries::new(
+                self.vmaps
+                    .iter()
+                    .enumerate()
+                    .map(|(x, y)| (x as i32, y.dac as i32)),
+                plotters::style::full_palette::TEAL.mix(0.8),
+            ))
+            .unwrap();
+            cx.draw_series(LineSeries::new(
+                self.vmaps
+                    .iter()
+                    .enumerate()
+                    .map(|(x, y)| (x as i32, y.fbavg as i32)),
+                plotters::style::full_palette::PURPLE.mix(0.8),
+            ))
+            .unwrap();
+        }
 
         root.draw_text(
             &tx,
@@ -285,11 +419,12 @@ impl Chart<Msg> for BalanceChart {
     }
 }
 
+const VMAP_LEN: usize = 100;
 impl Default for BalanceChart {
     fn default() -> Self {
         let num = 40;
         let mut measurements = HeapRb::new(num);
-        measurements.push_slice(&[2500, 2220, 2000, 2200, 2205, 1500, 3000]);
+        // measurements.push_slice(&[2500, 2220, 2000, 2200, 2205, 1500, 3000]);
         Self {
             measurements,
             refweight: Default::default(),
@@ -297,6 +432,9 @@ impl Default for BalanceChart {
             omit: 0,
             select: None,
             cur_moving: false,
+            balance_rp: HeapRb::new(RP_LEN),
+            vmaps: HeapRb::new(VMAP_LEN),
+            speed: HeapRb::new(SPEED_LEN),
         }
     }
 }
